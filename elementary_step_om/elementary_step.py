@@ -113,7 +113,7 @@ def set_chirality(product, reactant):
     return product_isomers_mols
 
 
-def valid_products(reactant, n=2, cd=4):
+def valid_products(reactant, n=2, cd=4, charge=0):
     """ General generator that produces hypothetical valid 
     one-step products from reactant. 
     
@@ -146,15 +146,16 @@ def valid_products(reactant, n=2, cd=4):
         for x in prod(comb(make1, num_make), comb(break1, num_brake)):
             conversion_matrix = np.array(sum(x, ())).sum(axis=0)
             product_adj_matrix = reactant_adj_matrix + conversion_matrix
+            
             if valid_product(product_adj_matrix, atomic_num):
                 proto_mol = get_proto_mol(atomic_num)
-                mol = AC2mol(proto_mol, product_adj_matrix, atomic_num, 0,
+                mol = AC2mol(proto_mol, product_adj_matrix, atomic_num, charge,
                              allow_charged_fragments=True, use_graph=True,
                              use_atom_maps=True)
                 Chem.Kekulize(mol, clearAromaticFlags=True)
 
-                # Hack is this OK?
-                if int(Chem.GetFormalCharge(mol)) != 0:
+                # Is this check OK?
+                if int(Chem.GetFormalCharge(mol)) != charge:
                     continue
 
                 # Get most rigid mol.
