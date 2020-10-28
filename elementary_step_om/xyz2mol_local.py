@@ -1,6 +1,3 @@
-#!/home/mariaharris/.conda/envs/my-rdkit-env/bin/python
-
-
 """
 Module for generating rdkit molobj/smiles/molecular graph from free atoms
 
@@ -30,7 +27,7 @@ import networkx as nx
 
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdmolops
-from rdkit import RDLogger
+import sys
 
 global __ATOM_LIST__
 __ATOM_LIST__ = \
@@ -52,14 +49,14 @@ global atomic_valence_electrons
 
 atomic_valence = defaultdict(list)
 atomic_valence[1] = [1]
-atomic_valence[5] = [4,3]
-atomic_valence[6] = [4,3]
+atomic_valence[5] = [3,4]
+atomic_valence[6] = [4]
 atomic_valence[7] = [3,4]
 atomic_valence[8] = [2,1,3]
 atomic_valence[9] = [1]
-atomic_valence[14] = [4,2]
-atomic_valence[15] = [5,4,3] #[5,4,3]
-atomic_valence[16] = [6,4,2] #[6,4,2]
+atomic_valence[14] = [4]
+atomic_valence[15] = [5,3] #[5,4,3]
+atomic_valence[16] = [6,3,2] #[6,4,2]
 atomic_valence[17] = [1]
 atomic_valence[32] = [4]
 atomic_valence[35] = [1]
@@ -142,30 +139,8 @@ def valences_not_too_large(BO, valences):
 
     return True
 
-
-def BO_is_OK(BO, AC, charge, DU, atomic_valence_electrons, atoms, valances,
-    allow_charged_fragments=True):
-    """
-    Sanity of bond-orders
-
-    args:
-        BO -
-        AC -
-        charge -
-        DU - 
-
-
-    optional
-        allow_charges_fragments - 
-
-
-    returns:
-        boolean - true of molecule is OK, false if not
-    """
-
-    if not valences_not_too_large(BO, valances):
-        return False
-
+def charge_is_OK(BO, AC, charge, DU, atomic_valence_electrons, atoms, valences,
+                 allow_charged_fragments=True):
     # total charge
     Q = 0
 
@@ -190,11 +165,36 @@ def BO_is_OK(BO, AC, charge, DU, atomic_valence_electrons, atoms, valances,
             if q != 0:
                 q_list.append(q)
 
-    check_sum = (BO - AC).sum() == sum(DU)
-    check_charge = charge == Q
-    # check_len = len(q_list) <= abs(charge)
+    return (charge == Q)
 
-    if check_sum and check_charge:
+def BO_is_OK(BO, AC, charge, DU, atomic_valence_electrons, atoms, valences,
+    allow_charged_fragments=True):
+    """
+    Sanity of bond-orders
+
+    args:
+        BO -
+        AC -
+        charge -
+        DU - 
+
+
+    optional
+        allow_charges_fragments - 
+
+
+    returns:
+        boolean - true of molecule is OK, false if not
+    """
+
+    if not valences_not_too_large(BO, valences):
+        return False
+
+    check_sum = (BO - AC).sum() == sum(DU)
+    check_charge = charge_is_OK(BO, AC, charge, DU, atomic_valence_electrons, atoms, valences,
+                                allow_charged_fragments)
+
+    if check_charge and check_sum: 
         return True
 
     return False
@@ -256,7 +256,7 @@ def clean_charges(mol):
 
 
 def BO2mol(mol, BO_matrix, atoms, atomic_valence_electrons,
-           mol_charge, allow_charged_fragments=True, use_atom_maps=True):
+           mol_charge, allow_charged_fragments=True,  use_atom_maps=False):
     """
     based on code written by Paolo Toscani
 
@@ -313,20 +313,20 @@ def BO2mol(mol, BO_matrix, atoms, atomic_valence_electrons,
             mol_charge,
             use_atom_maps=use_atom_maps)
     else:
-        mol = set_atomic_radicals(mol, atoms, atomic_valence_electrons,
-                                  BO_valences, use_atom_maps=True)
+        mol = set_atomic_radicals(mol, atoms, atomic_valence_electrons, BO_valences,
+                                  use_atom_maps=use_atom_maps)
 
     return mol
 
 
 def set_atomic_charges(mol, atoms, atomic_valence_electrons,
-                       BO_valences, BO_matrix, mol_charge, use_atom_maps=True):
+                       BO_valences, BO_matrix, mol_charge,
+                       use_atom_maps):
     """
     """
     q = 0
     for i, atom in enumerate(atoms):
         a = mol.GetAtomWithIdx(i)
-        #print(atom, a.GetAtomMapNum())
         if use_atom_maps:
             a.SetAtomMapNum(i+1)
         charge = get_atomic_charge(atom, atomic_valence_electrons[atom], BO_valences[i])
@@ -349,7 +349,7 @@ def set_atomic_charges(mol, atoms, atomic_valence_electrons,
 
 
 def set_atomic_radicals(mol, atoms, atomic_valence_electrons, BO_valences,
-                        use_atom_maps=True):
+                        use_atom_maps):
     """
 
     The number of radical electrons = absolute atomic charge
@@ -434,8 +434,14 @@ def AC2BO(AC, atoms, charge, allow_charged_fragments=True, use_graph=True):
     # make a list of valences, e.g. for CO: [[4],[2,1]]
     valences_list_of_lists = []
     AC_valence = list(AC.sum(axis=1))
-    for atomicNum in atoms:
-        valences_list_of_lists.append(atomic_valence[atomicNum])
+    
+    for i,(atomicNum,valence) in enumerate(zip(atoms,AC_valence)):
+        # valence can't be smaller than number of neighbourgs
+        possible_valence = [x for x in atomic_valence[atomicNum] if x >= valence]
+        if not possible_valence:
+            print('Valence of atom',i,'is',valence,'which bigger than allowed max',max(atomic_valence[atomicNum]),'. Stopping')
+            sys.exit()
+        valences_list_of_lists.append(possible_valence)
 
     # convert [[4],[2,1]] to [[4,2],[4,1]]
     valences_list = itertools.product(*valences_list_of_lists)
@@ -463,18 +469,22 @@ def AC2BO(AC, atoms, charge, allow_charged_fragments=True, use_graph=True):
             status = BO_is_OK(BO, AC, charge, DU_from_AC,
                         atomic_valence_electrons, atoms, valences,
                         allow_charged_fragments=allow_charged_fragments)
+            charge_OK = charge_is_OK(BO, AC, charge, DU_from_AC, atomic_valence_electrons, atoms, valences,
+                                     allow_charged_fragments=allow_charged_fragments)
 
             if status:
                 return BO, atomic_valence_electrons
-
-            elif BO.sum() >= best_BO.sum() and valences_not_too_large(BO, valences):
+            elif BO.sum() >= best_BO.sum() and valences_not_too_large(BO, valences) and charge_OK:
                 best_BO = BO.copy()
 
+    if not charge_OK:
+        pass
+        # print("Warning: SMILES charge doesn't match input charge")
     return best_BO, atomic_valence_electrons
 
 
-def AC2mol(mol, AC, atoms, charge, allow_charged_fragments=True,
-        use_graph=True, use_atom_maps=True):
+def AC2mol(mol, AC, atoms, charge, allow_charged_fragments=True, 
+           use_graph=True, use_atom_maps=False):
     """
     """
 
@@ -581,7 +591,7 @@ def xyz2AC_vdW(atoms, xyz):
     return AC, mol
 
 
-def get_AC(mol, covalent_factor=1.4):
+def get_AC(mol, covalent_factor=1.3):
     """
 
     Generate adjacent matrix from atoms and coordinates.
@@ -622,7 +632,7 @@ def get_AC(mol, covalent_factor=1.4):
     return AC
 
 
-def xyz2AC_huckel(atomicNumList,xyz,charge):
+def xyz2AC_huckel(atomicNumList, xyz, charge):
     """
 
     args
@@ -678,13 +688,9 @@ def chiral_stereo_check(mol):
     return
 
 
-def xyz2mol(atoms, coordinates,
-    charge=0,
-    allow_charged_fragments=True,
-    use_graph=True,
-    use_huckel=False,
-    embed_chiral=True,
-    use_atom_maps=True):
+def xyz2mol(atoms, coordinates, charge=0, allow_charged_fragments=True,
+            use_graph=True, use_huckel=False, embed_chiral=True,
+            use_atom_maps=False):
     """
     Generate a rdkit molobj from atoms, coordinates and a total_charge.
 
@@ -711,8 +717,9 @@ def xyz2mol(atoms, coordinates,
     # Convert AC to bond order matrix and add connectivity and charge info to
     # mol object
     new_mol = AC2mol(mol, AC, atoms, charge,
-        allow_charged_fragments=allow_charged_fragments,
-        use_graph=use_graph, use_atom_maps=use_atom_maps)
+                     allow_charged_fragments=allow_charged_fragments,
+                     use_graph=use_graph,
+                     use_atom_maps=use_atom_maps)
 
     # Check for stereocenters and chiral centers
     if embed_chiral:
@@ -761,8 +768,8 @@ if __name__ == "__main__":
         type=int,
         help="Total charge of the system")
 
-    use_atom_maps = True
     args = parser.parse_args()
+
     # read xyz file
     filename = args.structure
 
@@ -773,7 +780,7 @@ if __name__ == "__main__":
     # if you don't want to install networkx set quick=False and
     # uncomment 'import networkx as nx' at the top of the file
     quick = not args.no_graph
-    quick = True
+
     # chiral comment
     embed_chiral = not args.ignore_chiral
 
@@ -788,18 +795,13 @@ if __name__ == "__main__":
     if args.charge is not None:
         charge = int(args.charge)
 
-    if not charged_fragments:
-        atomic_valence[8] = [2,1]
-
     # Get the molobj
     mol = xyz2mol(atoms, xyz_coordinates,
         charge=charge,
         use_graph=quick,
         allow_charged_fragments=charged_fragments,
         embed_chiral=embed_chiral,
-        use_huckel=use_huckel,
-        use_atom_maps = use_atom_maps)
-
+        use_huckel=use_huckel)
 
     # Print output
     if args.output_format == "sdf":
@@ -809,7 +811,7 @@ if __name__ == "__main__":
     else:
         # Canonical hack
         isomeric_smiles = not args.ignore_chiral
-        smiles = Chem.MolToSmiles(mol, isomericSmiles=isomeric_smiles, allHsExplicit=True)
-        #m = Chem.MolFromSmiles(smiles)
-        #smiles = Chem.MolToSmiles(m, isomericSmiles=isomeric_smiles)
+        smiles = Chem.MolToSmiles(mol, isomericSmiles=isomeric_smiles)
+        m = Chem.MolFromSmiles(smiles)
+        smiles = Chem.MolToSmiles(m, isomericSmiles=isomeric_smiles)
         print(smiles)
