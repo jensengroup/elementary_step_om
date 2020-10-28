@@ -3,6 +3,8 @@ from itertools import product as prod
 import copy
 import numpy as np
 
+from functools import partial
+from multiprocessing import Pool
 
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors, rdchem
@@ -17,24 +19,25 @@ from .xyz2mol_local import AC2mol, get_proto_mol
 
 max_valence = {}
 
-max_valence[1] = 1
-max_valence[6] = 4
-max_valence[7] = 4
-max_valence[8] = 3
-max_valence[9] = 1
-max_valence[14] = 4
-max_valence[15] = 5
-max_valence[16] = 6
-max_valence[17] = 1
-max_valence[35] = 1
-max_valence[53] = 1
+# [min not allowed valence, max allwed valence]
+max_valence[1] = [0, 1]
+max_valence[6] = [0, 4]
+max_valence[7] = [0, 4]
+max_valence[8] = [0, 3]
+max_valence[9] = [0, 1]
+max_valence[14] = [0, 4]
+max_valence[15] = [0, 5]
+max_valence[16] = [0, 6]
+max_valence[17] = [0, 1]
+max_valence[35] = [0, 1]
+max_valence[53] = [0, 1]
 
 
 def valid_product(product_adj_matrix, atomic_num):
     """ Check that the produces product is valid according to the valence"""
     product_valence = product_adj_matrix.sum(axis=1, dtype=np.int16)
     for atom, valence in zip(atomic_num, product_valence):
-        if valence > max_valence[atom]:
+        if valence > max_valence[atom][1] or valence == max_valence[atom][0]:
             return False
     return True
 
@@ -113,12 +116,31 @@ def set_chirality(product, reactant):
     return product_isomers_mols
 
 
-def valid_products(reactant, n=2, cd=4, charge=0):
-    """ General generator that produces hypothetical valid 
-    one-step products from reactant. 
-    
+def conversion_matrix_to_mol(prod_ac_matrix , atomic_num, charge):
+    """ Applies the conversion matrix to the reactant AC matrix, and checks
+    that the molecule is.
+
+    Also works as helper function for creating mols in parallel.
+    """
+
+    proto_mol = get_proto_mol(atomic_num)
+    mol = AC2mol(proto_mol, prod_ac_matrix, atomic_num, charge,
+                 allow_charged_fragments=True, use_graph=True,
+                 use_atom_maps=True)
+    Chem.Kekulize(mol, clearAromaticFlags=True)
+
+    if int(Chem.GetFormalCharge(mol)) != charge:
+        return None
+
+    return get_most_rigid_resonance(mol)  # molecle with most double bonds.
+
+
+def valid_products(reactant, n=2, cd=4, charge=0, n_procs=1):
+    """ General generator that produces hypothetical valid
+    one-step products from reactant.
+
     * n (int) - number of bonds to break/form
-    * cd (int) - max value for #break + #form <= cd 
+    * cd (int) - max value for #break + #form <= cd
     """
     reactant_adj_matrix = Chem.GetAdjacencyMatrix(reactant)
     atomic_num = [atom.GetAtomicNum() for atom in reactant.GetAtoms()]
@@ -142,25 +164,25 @@ def valid_products(reactant, n=2, cd=4, charge=0):
     comb_to_check = [c for c in prod(range(n+1), repeat=2)
                      if sum(c) <= cd and max(c) <= n]
 
+    conv_to_mol = partial(conversion_matrix_to_mol,
+                          atomic_num=atomic_num, charge=charge)
+
+    # TODO: make more mem efficient. Right now it's not ideal
+    # all valid prod AC matrices are stored.
+    valid_prod_ac_matrices = []
     for num_make, num_brake in comb_to_check[1:]:  # skip (0, 0)
-        for x in prod(comb(make1, num_make), comb(break1, num_brake)):
-            conversion_matrix = np.array(sum(x, ())).sum(axis=0)
+        for conv_matrix in prod(comb(make1, num_make), comb(break1, num_brake)):
+            conversion_matrix = np.array(sum(conv_matrix, ())).sum(axis=0)
             product_adj_matrix = reactant_adj_matrix + conversion_matrix
-            
+
             if valid_product(product_adj_matrix, atomic_num):
-                proto_mol = get_proto_mol(atomic_num)
-                mol = AC2mol(proto_mol, product_adj_matrix, atomic_num, charge,
-                             allow_charged_fragments=True, use_graph=True,
-                             use_atom_maps=True)
-                Chem.Kekulize(mol, clearAromaticFlags=True)
+                valid_prod_ac_matrices.append(product_adj_matrix)
 
-                # Is this check OK?
-                if int(Chem.GetFormalCharge(mol)) != charge:
-                    continue
+    print(f"# valid product AC matrices: {len(valid_prod_ac_matrices)}")
+    with Pool(n_procs) as pool:
+        mols = pool.map(conv_to_mol, valid_prod_ac_matrices)
+    mols = filter(None, mols)
 
-                # Get most rigid mol.
-                mol = get_most_rigid_resonance(mol)
-
-                # Get stereo isomers:
-                for isomer in set_chirality(mol, reactant):
-                    yield isomer
+    for mol in mols:
+        for isomer in set_chirality(mol, reactant):
+            yield isomer

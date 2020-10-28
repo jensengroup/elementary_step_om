@@ -1,6 +1,4 @@
 # import gzip
-import concurrent.futures
-
 from rdkit import Chem
 from rdkit.Chem import rdmolfiles, rdDistGeom, AllChem
 from rdkit.Chem import rdmolops
@@ -142,10 +140,11 @@ class Reaction():
         self._reaction_mol.SetProp('_Name', self._reaction_name)
         Chem.MolToMolFile(self._reaction_mol, f'{self._reaction_name}.mol')
 
-    def shake(self, max_bonds=2, CD=4, generator=False):
-        """ """        
+    def shake(self, max_bonds=2, CD=4, generator=False, nprocs=1):
+        """ """ 
         self._products = valid_products(self._reaction_mol, n=max_bonds, cd=CD, 
-                                        charge=Chem.GetFormalCharge(self._reaction_mol))
+                                        charge=Chem.GetFormalCharge(self._reaction_mol),
+                                        n_procs=nprocs)
         if not generator:
             self._products = list(self._products)
 
