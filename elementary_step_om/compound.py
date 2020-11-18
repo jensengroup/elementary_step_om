@@ -163,6 +163,7 @@ class Conformer:
         """ """
         self.structure = sdf
         self.label = label
+        self._converged = None
         self._set_atom_symbols()
         self._set_init_connectivity() # makes connectivty matrix from sdf
 
@@ -376,8 +377,11 @@ class Fragment(Molecule):
             results = pool.map(worker, self._conformers)
 
         for i, conf in enumerate(self._conformers):
-            conf.results = results[i]
-            conf.update_structure()
+            if results[i]['converged'] == True:
+                conf.results = results[i]
+                conf.update_structure()
+            else:
+                conf._converged = False
 
 
 # TODO: perhaps

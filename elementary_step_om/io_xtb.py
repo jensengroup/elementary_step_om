@@ -22,6 +22,9 @@ def read_xtb_out(content, quantity='energy'):
 
 def read_converged(content):
     """Check if program terminated normally"""
+    for line in content.split('\n'):
+        if '[ERROR] Program stopped due to fatal error' in line:
+            return False
     return True
 
 

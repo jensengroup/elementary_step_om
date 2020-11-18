@@ -72,7 +72,11 @@ class xTB(Calculator):
         os.chdir('..')
 
         results = dict()
-        for prop in properties:
-            results[prop] = read_xtb_out(output, prop)
+        if read_xtb_out(output, 'converged'):
+            results['converged'] = True
+            for prop in properties:
+                results[prop] = read_xtb_out(output, prop)
+        else:
+            results['converged'] = False
 
         return results
