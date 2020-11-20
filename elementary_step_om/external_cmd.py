@@ -43,7 +43,7 @@ class xTB(Calculator):
         super().__init__(*args, **kwds)
 
     def _make_cmd(self, xtb_args):
-        xtb_kwds = ''
+        xtb_kwds = '--norestart --strict '
         for arg, value in xtb_args.items():
             if value in [None, '']:
                 xtb_kwds += f"--{arg.lower()} "

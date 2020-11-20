@@ -22,8 +22,10 @@ def read_xtb_out(content, quantity='energy'):
 
 def read_converged(content):
     """Check if program terminated normally"""
-    for line in content.split('\n'):
+    for line in reversed(content.split('\n')):
         if '[ERROR] Program stopped due to fatal error' in line:
+            return False
+        elif '[WARNING] Runtime exception occurred' in line:
             return False
     return True
 
@@ -36,7 +38,10 @@ def read_energy(content):
                 energy = float(line.strip().split()[3])
             except ValueError:
                 raise ValueError('xTB energy not a float. Made for v6.3.3 output.')
-    return energy
+    try: 
+        return energy
+    except:
+        print(content)
 
 
 def read_structure(content):
