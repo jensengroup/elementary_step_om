@@ -22,10 +22,13 @@ def read_xtb_out(content, quantity='energy'):
 
 def read_converged(content):
     """Check if program terminated normally"""
+    
+    error_msg = ['[ERROR] Program stopped due to fatal error',
+                 '[WARNING] Runtime exception occurred',
+                 'Error in Broyden matrix inversion!']
+
     for line in reversed(content.split('\n')):
-        if '[ERROR] Program stopped due to fatal error' in line:
-            return False
-        elif '[WARNING] Runtime exception occurred' in line:
+        if any([msg in line for msg in error_msg]):
             return False
     return True
 

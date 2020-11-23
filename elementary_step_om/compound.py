@@ -249,7 +249,7 @@ class Conformer:
         return False
 
     def update_structure(self, covalent_factor=1.3):
-        """ """
+        """ The sdf write is not pretty can this be done better?"""
         if 'structure' in self.results.keys():
             new_coords = self.results.pop('structure')
         else:
@@ -260,13 +260,18 @@ class Conformer:
 
             natoms = self._init_connectivity.shape[0]
             init_sdf =  self.structure.split('\n')
-            for i, line in enumerate(init_sdf[4:]):
+
+            sdf_string = "\n".join(init_sdf[:4]) + "\n"
+            for i, line in enumerate(init_sdf[4:4+natoms]):
                 line_tmp = line.split()
-                line_tmp[:3] = [f"{x:10.4f}" for x in new_coords[i]]
-                init_sdf[4+i] = " ".join(line_tmp)
-                if i == natoms - 1:
-                    break
-            self.structure = "\n".join(init_sdf)
+                sdf_string += "".join([f"{x:10.4f}" for x in new_coords[i]])
+                sdf_string += f" {line_tmp[3]}"
+                sdf_string += "   " # three spaces?? why?
+                sdf_string += " ".join(line_tmp[4:])
+                sdf_string += "\n"
+            sdf_string += "\n".join(init_sdf[4+natoms:])
+
+            self.structure = sdf_string
 
         else:
             self._converged = False
@@ -346,15 +351,19 @@ class Fragment(Molecule):
         eliminated at a later stage.
         """
         rdkit_mol = self._dative2covalent(self.molecule)  # needed for obabel
-
+        
         p = Chem.rdDistGeom.srETKDGv3()
-        Chem.rdDistGeom.EmbedMultipleConfs(rdkit_mol, numConfs=nConfs,
-                                           params=p)
+        try:  # Can the fragment actually be embedded?
+            Chem.rdDistGeom.EmbedMultipleConfs(rdkit_mol, numConfs=nConfs,
+                                               params=p)
+        except RuntimeError:
+            print(f"Failed to embed: {self.label} in step 1")
+            self._embed_ok = False
 
         # make tmp mol to copy coords back into original connectivity.
         tmp_mol = copy.deepcopy(self.molecule)
         confid = AllChem.EmbedMolecule(tmp_mol)
-        if confid >=0:  # if RDKit can't embed confid = -1
+        if confid >= 0:  # if RDKit can't embed confid = -1
             tmp_conf = tmp_mol.GetConformer()
             self._embed_ok = True
             for conf_idx, embed_conf in enumerate(rdkit_mol.GetConformers()):
@@ -373,7 +382,7 @@ class Fragment(Molecule):
                                  label=f"{self.label}_c{conf_idx}")
                 self._conformers.append(conf)
         else:
-            print(f"Failed to embed: {self.label}")
+            print(f"Failed to embed: {self.label} in step 2")
             self._embed_ok = False
 
     def relax_conformers(self, nprocs=4):
