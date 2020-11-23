@@ -22,6 +22,14 @@ def read_xtb_out(content, quantity='energy'):
 
 def read_converged(content):
     """Check if program terminated normally"""
+    
+    error_msg = ['[ERROR] Program stopped due to fatal error',
+                 '[WARNING] Runtime exception occurred',
+                 'Error in Broyden matrix inversion!']
+
+    for line in reversed(content.split('\n')):
+        if any([msg in line for msg in error_msg]):
+            return False
     return True
 
 
@@ -33,7 +41,10 @@ def read_energy(content):
                 energy = float(line.strip().split()[3])
             except ValueError:
                 raise ValueError('xTB energy not a float. Made for v6.3.3 output.')
-    return energy
+    try: 
+        return energy
+    except:
+        print(content)
 
 
 def read_structure(content):

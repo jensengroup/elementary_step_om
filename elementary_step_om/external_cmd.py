@@ -43,7 +43,7 @@ class xTB(Calculator):
         super().__init__(*args, **kwds)
 
     def _make_cmd(self, xtb_args):
-        xtb_kwds = ''
+        xtb_kwds = '--norestart --strict '
         for arg, value in xtb_args.items():
             if value in [None, '']:
                 xtb_kwds += f"--{arg.lower()} "
@@ -72,7 +72,11 @@ class xTB(Calculator):
         os.chdir('..')
 
         results = dict()
-        for prop in properties:
-            results[prop] = read_xtb_out(output, prop)
+        if read_xtb_out(output, 'converged'):
+            results['converged'] = True
+            for prop in properties:
+                results[prop] = read_xtb_out(output, prop)
+        else:
+            results['converged'] = False
 
         return results
