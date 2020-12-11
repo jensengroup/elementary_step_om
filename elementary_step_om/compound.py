@@ -297,6 +297,7 @@ class Solvent(Molecule):
         self._smiles = smiles
         self._n_solvent_molecules = n_solvent
         self._nactive = active
+        self.label = 'solvent'
 
 
 class Fragment(Molecule):
