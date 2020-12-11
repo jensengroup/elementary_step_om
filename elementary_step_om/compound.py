@@ -413,7 +413,8 @@ class Fragment(Molecule):
                 results = pool.map(worker, self._conformers)
 
             for i, conf in enumerate(self._conformers):
-                if results[i]['converged'] == True:
+                converged = results[i].pop('converged')
+                if converged == True:
                     conf.results = results[i]
                     conf.update_structure()
                 else:
