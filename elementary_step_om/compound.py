@@ -83,7 +83,7 @@ class Molecule():
         first_mol = Chem.MolFromMolBlock(self._conformers[0],
                                          sanitize=self.sanitize,
                                          removeHs=self.removeHs)
-    
+
         if not first_mol.GetConformer().Is3D():  # if 1D of 2D
             self.molecule = first_mol
             self._2d_structure = True
@@ -121,7 +121,7 @@ class Molecule():
             obj._conformers.append(suppl.GetItemText(conf_idx))
         obj._2d_structure = False
         return obj
-    
+
     @classmethod
     def from_rdkit_mol(cls, rdkit_mol, removeHs=False, sanitize=False):
         """ """
@@ -197,7 +197,7 @@ class Conformer:
         natoms = int(info_line[0])
         nbonds = int(info_line[1])
         del sdf[:natoms + 1]  # del coord block
-  
+
         connectivity = np.zeros((natoms, natoms), dtype=np.int8)
         for line_idx in range(nbonds):
             i, j = sdf[line_idx].split()[:2]
@@ -344,6 +344,27 @@ class Fragment(Molecule):
                 self.molecule.GetAtomWithIdx(atom_idx[0]).SetChiralTag(
                                              rdchem.ChiralType.CHI_UNSPECIFIED)
 
+    def num_rotatable_bond(self):
+        """ Calculates the number of rotatable bonds in the fragment """
+        if self.molecule is None:
+            raise RuntimeError("Fragment has no RDKit mol")
+
+        rot_bonds_smarts = [
+                "[!#1]~[!$(*#*)&!D1]-!@[!$(*#*)&!D1]~[!#1]",
+                "[*]~[*]-[O,S]-[#1]",
+                "[*]~[*]-[NX3;H2]-[#1]",
+                ]
+
+        # TODO Sanitizing Molecule should be done elsewhere. 
+        Chem.SanitizeMol(self.molecule)
+        num_dihedral = 0
+        for bond_smart in rot_bonds_smarts:
+            dihedral_template = Chem.MolFromSmarts(bond_smart)
+            dihedrals = self.molecule.GetSubstructMatches(dihedral_template)
+            num_dihedral += len(dihedrals)
+
+        return num_dihedral
+
     def make_conformers_rdkit(self, nConfs=20, uffSteps=5_000, seed=20):
         """
         makes conformers by embedding conformers using RDKit and
@@ -351,7 +372,7 @@ class Fragment(Molecule):
         eliminated at a later stage.
         """
         rdkit_mol = self._dative2covalent(self.molecule)  # needed for obabel
-        
+
         p = Chem.rdDistGeom.srETKDGv3()
         try:  # Can the fragment actually be embedded?
             Chem.rdDistGeom.EmbedMultipleConfs(rdkit_mol, numConfs=nConfs,
@@ -372,7 +393,7 @@ class Fragment(Molecule):
                                                confId=embed_conf.GetId())
                 obmol = pybel.readstring('sdf', mol_block)
                 obmol.localopt(forcefield='uff', steps=uffSteps)
-                
+
                 # Update tmp mol conformer with UFF coords.
                 for i, atom in enumerate(obmol):
                     x, y, z = atom.coords
@@ -460,7 +481,7 @@ class Reaction():
         rdmolops.AssignStereochemistry(self._reaction_mol, cleanIt=True,
                                        flagPossibleStereoCenters=True,
                                        force=True)
-        
+
         # Write input file.
         self._reaction_mol.SetProp('_Name', self._reaction_name)
         Chem.MolToMolFile(self._reaction_mol, f'{self._reaction_name}.mol')
@@ -471,9 +492,9 @@ class Reaction():
         Enumerates all possible products where the combinations
         of `max_bonds` are broken/formed. However the maximum
         formed/broken bonds are `CD`.
-        """ 
+        """
         self.products = valid_products(self._reaction_mol, n=max_bonds,
-                            cd=CD, 
+                            cd=CD,
                             charge=Chem.GetFormalCharge(self._reaction_mol),
                             n_procs=nprocs)
 
@@ -492,7 +513,7 @@ class Reaction():
         """
         if len(self.products) == 0:
             raise RuntimeError('No products created yet. Run .shake() .')
-        
+
         # find fragment label number
         if len(self.unique_fragments) == 0:
             frag_num = 0
