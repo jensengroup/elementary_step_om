@@ -1,5 +1,7 @@
 import copy
+from joblib import Parallel, delayed
 import multiprocessing as mp
+from itertools import chain
 import numpy as np
 
 from rdkit.Geometry import Point3D
@@ -11,7 +13,11 @@ from rdkit.Chem.EnumerateStereoisomers import StereoEnumerationOptions
 from openbabel import pybel
 
 from .elementary_step import valid_products
+from .utils import make_graph_hash
 
+import hashlib
+
+m = hashlib.sha256()
 
 def sdf2xyz(sdftxt):
     """  """
@@ -33,7 +39,7 @@ def sdf2xyz(sdftxt):
     return xyz_string
 
 
-class Molecule():
+class Molecule:
     """ """
     def __init__(self, moltxt=None, label=None, removeHs=False,
                  sanitize=False):
@@ -48,22 +54,38 @@ class Molecule():
         self._2d_structure = None
         self.removeHs = removeHs
         self.sanitize = sanitize
+        self._mol_hash = None
 
         if moltxt is not None:
             self._read_moltxt(moltxt)
 
     def __repr__(self):
         return f"{self.__class__.__name__}(label={self.label})"
+    
+    def _repr_svg_(self):
+        """ In Jupyter Notebooks show reacting mol """
+        from rdkit.Chem.Draw import rdMolDraw2D
+
+        d2d = rdMolDraw2D.MolDraw2DSVG(200,200)
+        d2d.DrawMolecule(self.molecule, legend="Reacting Mol")
+        d2d.FinishDrawing()
+        return d2d.GetDrawingText()
 
     def __eq__(self, other):
         """  """
         if not isinstance(other, self.__class__):
             raise TypeError(f"Comparing {self.__class__} to {other.__class__}")
+        return self._mol_hash == other._mol_hash
+        
+        #if (self.molecule.HasSubstructMatch(other.molecule, useChirality=True) and
+        #    other.molecule.HasSubstructMatch(self.molecule, useChirality=True)):
+        #    return True
+        #return False
 
-        if (self.molecule.HasSubstructMatch(other.molecule, useChirality=True) and
-            other.molecule.HasSubstructMatch(self.molecule, useChirality=True)):
-            return True
-        return False
+    def __hash__(self):
+        if self._mol_hash is None:
+            self._mol_hash = make_graph_hash(self.molecule)
+        return self._mol_hash
 
     def set_calculator(self, calculator):
         """ """
@@ -156,6 +178,13 @@ class Molecule():
                 bond.SetBondType(Chem.rdchem.BondType.SINGLE)
         mol.UpdatePropertyCache(strict=False)
         return mol
+    
+    def get_fragments(self):
+        """ """
+        fragments = []
+        for frag in Chem.GetMolFrags(self.molecule, asMols=True, sanitizeFrags=False):
+            fragments.append(Fragment.from_rdkit_mol(frag))
+        return fragments
 
 
 class Conformer:
@@ -201,8 +230,8 @@ class Conformer:
         connectivity = np.zeros((natoms, natoms), dtype=np.int8)
         for line_idx in range(nbonds):
             i, j = sdf[line_idx].split()[:2]
-            connectivity[int(i) - 1, int(j)-1] = 1
-            connectivity[int(j) - 1, int(i)-1] = 1
+            connectivity[int(i) - 1, int(j) - 1] = 1
+            connectivity[int(j) - 1, int(i) - 1] = 1
 
         self._init_connectivity = connectivity
 
@@ -280,16 +309,6 @@ class Conformer:
         return sdf2xyz(self.structure)
 
 
-class Reagent(Molecule):
-    """  """
-    pass
-
-
-class Product(Molecule):
-    """ """
-    pass
-
-
 class Solvent(Molecule):
     """ """
     def __init__(self, smiles=None, n_solvent=0, active=0):
@@ -308,6 +327,16 @@ class Fragment(Molecule):
 
         if self.molecule is not None:
             self._reset_label_chirality()
+
+    def _reset_label_chirality(self):
+        """ Reset psudo R/S label chirality for fragments """
+        patt = Chem.MolFromSmarts('[C^3;H2,H3]')
+        atom_matches = self.molecule.GetSubstructMatches(patt)
+
+        if atom_matches is not None:
+            for atom_idx in atom_matches:
+                self.molecule.GetAtomWithIdx(atom_idx[0]).SetChiralTag(
+                                             rdchem.ChiralType.CHI_UNSPECIFIED)
 
     @classmethod
     def from_rdkit_mol(cls, rdkit_mol):
@@ -334,16 +363,6 @@ class Fragment(Molecule):
                 obj._conformers.append(mol_block)
 
         return obj
-
-    def _reset_label_chirality(self):
-        """ Reset psudo R/S label chirality for fragments """
-        patt = Chem.MolFromSmarts('[C^3;H2,H3]')
-        atom_matches = self.molecule.GetSubstructMatches(patt)
-
-        if atom_matches is not None:
-            for atom_idx in atom_matches:
-                self.molecule.GetAtomWithIdx(atom_idx[0]).SetChiralTag(
-                                             rdchem.ChiralType.CHI_UNSPECIFIED)
 
     def num_rotatable_bond(self):
         """ Calculates the number of rotatable bonds in the fragment """
@@ -427,23 +446,62 @@ def worker(conf):
     return conf.get_calculator().calculate()
 
 
-class Reaction():
+class Reaction:
+    """
+    Contains atom-mapped reactant and product.
+    """
+    def __init__(self, reactant, product):
+        
+        # TODO: Make "Reaction Hash"
+
+        self.reactant = reactant
+        self.product = product
+
+        self._reaction_hash = None
+    
+    def __eq__(self, other):
+        """  """
+        if not isinstance(other, self.__class__):
+            raise TypeError(f"Comparing {self.__class__} to {other.__class__}")
+        return self._reaction_hash == other._reaction_hash
+
+    def __hash__(self):
+        if self._reaction_hash is None:
+            self._reaction_hash = make_graph_hash(self.product.molecule, 
+                                                  use_atom_maps=True)
+        return self._reaction_hash
+
+    def compute_barrier(self):
+        # TODO: This has to be done.
+        pass
+    
+    def get_fragments(self):
+        """ """
+        reac_frags = [Fragment.from_rdkit_mol(frag) for frag in Chem.GetMolFrags(self.reactant.molecule, asMols=True, sanitizeFrags=False)]
+        prod_frags = [Fragment.from_rdkit_mol(frag) for frag in Chem.GetMolFrags(self.product.molecule, asMols=True, sanitizeFrags=False)]
+        
+        self._reactant_frags = reac_frags
+        self._product_frags = prod_frags
+
+        return self._reactant_frags, self._product_frags
+
+class ReactionCell:
     """ """
-    def __init__(self, reagents=None, solvent=None, reaction_name=None,
-                 removeHs=False, sanitize=False):
+    def __init__(self, reagents=None, solvent=None, max_bonds=2,
+                 max_chemical_dist=4):
 
         self._reagents = reagents
         self._solvent = solvent
 
-        self._reaction_name = reaction_name
-        self._reaction_mol = None
+        self._reacting_mol = None
 
-        self.products = []
+        self._max_bonds = max_bonds
+        self._max_cd = max_chemical_dist
+
+        self._reactions = []
+        self._products = None
+
         self.unique_fragments = []
-
-        # Helper varibels
-        self.removeHs = removeHs
-        self.sanitize = sanitize
 
         self._prepare_reaction()
 
@@ -453,67 +511,71 @@ class Reaction():
         """
         # Add Reagents
         if len(self._reagents) == 1:
-            self._reaction_mol = self._reagents[0].molecule
+            reactants = self._reagents[0].molecule
         else:
-            self._reaction_mol = Chem.CombineMols(
-                                        self._reagents[0].molecule,
-                                        self._reagents[1].molecule)
+            reactants = Chem.CombineMols(self._reagents[0].molecule, self._reagents[1].molecule)
             if len(self._reagents) > 2:
                 for reag in self._reagents[2:]:
-                    self._reaction_mol = Chem.CombineMols(self._reaction_mol,
-                                                          reag.molecules)
+                    reactants = Chem.CombineMols(reactants, reag.molecule)
 
         # Add active solvent molecules
         for _ in range(self._solvent._nactive):
             sol_mol = Chem.AddHs(Chem.MolFromSmiles(self._solvent._smiles))
-            self._reaction_mol = Chem.CombineMols(self._reaction_mol, sol_mol)
-        AllChem.Compute2DCoords(self._reaction_mol)
+            reactants = Chem.CombineMols(reactants, sol_mol)
+        AllChem.Compute2DCoords(reactants)
 
         # Atom mapping, and set random chirality.
-        for i, atom in enumerate(self._reaction_mol.GetAtoms()):
+        for i, atom in enumerate(reactants.GetAtoms()):
             atom.SetAtomMapNum(i+1)
 
-        Chem.SanitizeMol(self._reaction_mol)
+        Chem.SanitizeMol(reactants)
         opts = StereoEnumerationOptions(onlyUnassigned=False, unique=False)
-        rdmolops.AssignStereochemistry(self._reaction_mol, cleanIt=True,
+        rdmolops.AssignStereochemistry(reactants, cleanIt=True,
                                        flagPossibleStereoCenters=True,
                                        force=True)
-        self._reaction_mol = next(EnumerateStereoisomers(self._reaction_mol,
+        reactants = next(EnumerateStereoisomers(reactants,
                                   options=opts))
-        rdmolops.AssignStereochemistry(self._reaction_mol, cleanIt=True,
+        rdmolops.AssignStereochemistry(reactants, cleanIt=True,
                                        flagPossibleStereoCenters=True,
                                        force=True)
+        
+        self._reacting_mol = Molecule.from_rdkit_mol(reactants)
 
-        # Write input file.
-        self._reaction_mol.SetProp('_Name', self._reaction_name)
-        Chem.MolToMolFile(self._reaction_mol, f'{self._reaction_name}.mol')
-
-    def shake(self, max_bonds=2, CD=4, get_unique_fragments=True,
-              generator=False, nprocs=1):
+    def reactions(self, get_unique_fragments=True,
+                 generator=False, nprocs=1):
         """
         Enumerates all possible products where the combinations
         of `max_bonds` are broken/formed. However the maximum
         formed/broken bonds are `CD`.
         """
-        self.products = valid_products(self._reaction_mol, n=max_bonds,
-                            cd=CD,
-                            charge=Chem.GetFormalCharge(self._reaction_mol),
+        self._reactions = valid_products(self._reacting_mol.molecule,
+                            n=self._max_bonds,
+                            cd=self._max_cd,
+                            charge=Chem.GetFormalCharge(self._reacting_mol.molecule),
                             n_procs=nprocs)
+        
+        self._reactions = [Reaction(self._reacting_mol, Molecule.from_rdkit_mol(product)) 
+                            for product in self._reactions]
+        
+        self._products = list(set([reaction.product for reaction in self._reactions]))
 
-        if not generator:
-            # TODO: give product names
-            self.products = [Product.from_rdkit_mol(m) for m in self.products]
-            if get_unique_fragments:  # Extract all fragments
-                self.get_fragments()
+        return self._products, self._reactions
+        #if not generator:
+        #    # TODO: give Reaction names
+        #    self._reactions = [Reaction.from_rdkit_mol(m) for m in self._reactions]
+        #    if get_unique_fragments:  # Extract all fragments
+        #        self.get_fragments()
+        
+        #self._products = list(set(self._reactions))
 
         # TODO: If we have a transition metal add the remaining non active
         # solvent molecules.
 
-    def get_fragments(self, remove_atomMapNum=True):
+    def get_fragments(self, ncpus=-1, remove_atomMapNum=True):
         """
         Return .csv file with fragments and the corresponding charge
         """
-        if len(self.products) == 0:
+        if len(self.reactions) == 0:
             raise RuntimeError('No products created yet. Run .shake() .')
 
         # find fragment label number
@@ -522,12 +584,22 @@ class Reaction():
         else:
             frag_num = int(self.unique_fragments[-1].label.split('-')[0])
 
-        for mol in self.products:
-            fragments = Chem.GetMolFrags(mol.molecule, asMols=True,
-                                         sanitizeFrags=False)
-            for frag in fragments:
-                mfrag = Fragment.from_rdkit_mol(frag)
-                if mfrag not in self.unique_fragments:
-                    mfrag.label = f'fragment-{frag_num}'
-                    self.unique_fragments.append(mfrag)
-                    frag_num += 1
+        fragments = Parallel(n_jobs=ncpus)(delayed(
+            self._get_fragments_helper)(mol) for mol in self.reactions
+            )
+        self.unique_fragments = list(set(chain.from_iterable(fragments)))
+
+        n = 0
+        for frag in self.unique_fragments:
+            frag.label =  f'fragment-{n}'
+            n += 1
+    
+    @staticmethod
+    def _get_fragments_helper(mol):
+        """
+        """
+        frags = []
+        for frag in Chem.GetMolFrags(mol.molecule, asMols=True,
+                                     sanitizeFrags=False):
+            frags.append(Fragment.from_rdkit_mol(frag))
+        return frags
