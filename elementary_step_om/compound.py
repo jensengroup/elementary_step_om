@@ -260,7 +260,7 @@ class Conformer:
         new_coords = np.asarray(new_coords, dtype=np.float32)
         new_ac = np.zeros(self._init_connectivity.shape, dtype=np.int8)
         for i in range(new_coords.shape[0]):
-            for j in range(new_coords.shape[1]):
+            for j in range(new_coords.shape[0]):
                 if i > j:
                     atom_num_i = pt.GetAtomicNumber(self._atom_symbols[i])
                     atom_num_j = pt.GetAtomicNumber(self._atom_symbols[j])
@@ -431,7 +431,6 @@ class Fragment(Molecule):
         if self._embed_ok is True:  # Check that embeding is ok
             with mp.Pool(nprocs) as pool:
                 results = pool.map(worker, self._conformers)
-
             for i, conf in enumerate(self._conformers):
                 converged = results[i].pop('converged')
                 if converged == True:

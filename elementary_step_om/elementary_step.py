@@ -47,8 +47,8 @@ def get_most_rigid_resonance(mol):
     all_resonance_structures = [res for res in rdchem.ResonanceMolSupplier(mol,
                                 ResonanceFlags.UNCONSTRAINED_ANIONS)]
 
-    if len(all_resonance_structures) == 1:
-        return all_resonance_structures[0]
+    if len(all_resonance_structures) <= 1: # 0 is kind weird
+        return mol
     else:
         min_rot_bonds = 9999
         for res in all_resonance_structures:
