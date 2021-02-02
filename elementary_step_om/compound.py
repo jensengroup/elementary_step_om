@@ -1,26 +1,19 @@
-import warnings
 import shutil
 import copy
-from joblib import Parallel, delayed
+from joblib import Parallel
 import multiprocessing as mp
-from itertools import chain
 import numpy as np
 
 from rdkit.Geometry import Point3D
 from rdkit import Chem
-from rdkit.Chem import rdmolfiles, AllChem, rdchem, rdmolops, rdDistGeom
+from rdkit.Chem import rdmolfiles, AllChem, rdmolops, rdDistGeom
 from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers
 from rdkit.Chem.EnumerateStereoisomers import StereoEnumerationOptions
 
 from openbabel import pybel
-
-from .elementary_step import valid_products
-from .utils import make_graph_hash
-from .external_cmd import xTBPath, xTB
-
 import hashlib
 
-m = hashlib.sha256()
+from .external_cmd import xTBPath, xTB
 
 def sdf2xyz(sdftxt):
     """  """
@@ -84,7 +77,16 @@ class Molecule:
 
     def __hash__(self):
         if self._mol_hash is None:
-            self._mol_hash = make_graph_hash(self.molecule)
+            m = hashlib.blake2b()
+            m.update(Chem.MolToSmiles(self.molecule).encode('utf-8'))
+            self._mol_hash = int(str(int(m.hexdigest(), 16))[:32])
+        #self._mol_hash = Chem.MolToSmiles(self.molecule)
+        #if self._mol_hash is None and not self.pseudo_chiral:
+            #self._mol_hash = hash(Chem.MolToSmiles(self.molecule))
+            #self._mol_hash = make_graph_hash(self.molecule)
+        #elif self._mol_hash is None and self.pseudo_chiral:
+            #self._mol_hash = make_graph_hash(self.molecule, use_atom_maps=True)
+        
         return self._mol_hash
 
     def set_calculator(self, calculator):
@@ -123,7 +125,7 @@ class Molecule:
 #                                         sanitize=False,
 #                                         removeHs=False)
 #
-#        if not first_mol.GetConformer().Is3D():  # if 1D of 2D
+#        if not reactionsfirst_mol.GetConformer().Is3D():  # if 1D of 2D
 #            self.molecule = first_mol
 #            self._2d_structure = True
 #        else:  # if 3D create 2D coords
@@ -205,7 +207,7 @@ class Molecule:
         try:  # Can the fragment actually be embedded?
             rdDistGeom.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
         except RuntimeError:
-            print(f"Failed to embed: {self.label} in step 1")
+            print(f"RDKit Failed to embed: {self.label}.")
             return None, False
         
         tmp_frag_mol = copy.deepcopy(frag_rdkit)
@@ -229,7 +231,7 @@ class Molecule:
                 conf = Conformer(Chem.MolToMolBlock(tmp_frag_mol), label=conf_name)
                 conformers.append(conf)
         else:
-            print(f"Failed to embed: {self.label} in step 2")
+            print(f"openbabel failed to UFF optimize: {self.label}.")
             embed_ok = False
 
         return conformers, embed_ok
@@ -328,7 +330,6 @@ class Conformer:
     
     def _update_structure(self, new_coords):
         """ """
-        
         natoms = self._init_connectivity.shape[0]
         init_sdf =  self.structure.split('\n')
 
@@ -354,6 +355,7 @@ class Conformer:
         
         if self._check_structure(new_coords):
             self._update_structure(new_coords)
+            self._converged = True
         else:
             self._converged = False
     
@@ -392,6 +394,7 @@ class Fragment(Molecule):
 
     def __init__(self, **kwds):
         super().__init__(**kwds)
+        self.pseudo_chiral = False 
 
     #    if self.molecule is not None:
     #        self._reset_label_chirality()
@@ -464,7 +467,8 @@ class Fragment(Molecule):
         rdkit_mol = self._dative2covalent(self.molecule)  # copy of rdkit_mol with covalent bonds
 
         self._conformers, self._embed_ok = self._embed_fragment(rdkit_mol, nconfs=nconfs, uffSteps=uffSteps, seed=seed)
-    
+        if self._embed_ok is not True:
+            self._conformers = []
 
     def relax_conformers(self, nprocs=4):
         """ """
@@ -475,11 +479,11 @@ class Fragment(Molecule):
                 converged = results[i].pop('converged')
                 if converged == True:
                     conf.results = results[i]
-                    conf.update_structure()
+                    conf.update_structure() # checks if structure changed
                 else:
                     conf._converged = False
 
-    def worker(conf):
+    def worker(self, conf):
         return conf.get_calculator().calculate()
 
 
@@ -491,7 +495,8 @@ class Reaction:
         
         self.reactant = reactant
         self.product = product
-        
+        self.ts_energy = None
+
         self._reactant_frags = None
         self._product_frags = None 
 
@@ -507,8 +512,11 @@ class Reaction:
     def __hash__(self):
         # This is not OK if you take multiple steps.
         if self._reaction_hash is None:
-            self._reaction_hash = make_graph_hash(self.product.molecule, 
-                                                  use_atom_maps=True)
+            #self._reaction_hash = make_graph_hash(self.product.molecule, 
+            #                                      use_atom_maps=True)
+            m = hashlib.blake2b()
+            m.update(Chem.MolToSmiles(self.product.molecule).encode('utf-8'))
+            self._mol_hash = int(str(int(m.hexdigest(), 16))[:32])
         return self._reaction_hash
     
     def get_fragments(self):

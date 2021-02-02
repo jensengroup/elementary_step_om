@@ -170,7 +170,7 @@ def valid_products(reactant, n=2, cd=4, charge=0, n_procs=1):
     # TODO: make more mem efficient. Right now it's not ideal
     # all valid prod AC matrices are stored.
     valid_prod_ac_matrices = []
-    for num_make, num_brake in comb_to_check:  # includes reactant
+    for num_make, num_brake in comb_to_check[1:]:  # excluding reactant 0,0
         for conv_matrix in prod(comb(make1, num_make), comb(break1, num_brake)):
             conversion_matrix = np.array(sum(conv_matrix, ())).sum(axis=0)
             product_adj_matrix = reactant_adj_matrix + conversion_matrix

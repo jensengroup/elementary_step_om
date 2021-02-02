@@ -78,7 +78,7 @@ def make_graph_hash(mol, use_atom_maps=False):
         if rdkit_chiral_tag == ChiralType.CHI_UNSPECIFIED:
             chiral_tag = ""
         else:
-            if equivalent_neighbors(atom):
+            if equivalent_neighbors(atom) and not use_atom_maps: # TODO is this ok?
                 chiral_tag = ""
             elif rdkit_chiral_tag == ChiralType.CHI_TETRAHEDRAL_CW:
                 chiral_tag = "@"
@@ -103,7 +103,7 @@ def make_graph_hash(mol, use_atom_maps=False):
         if rdkit_bond_stereo == BondStereo.STEREONONE:
             bond_stereo = ""
         else:
-            if double_bond_pseudochiral(bond):
+            if double_bond_pseudochiral(bond) and not use_atom_maps: #TODO is this OK?
                 bond_stereo = ""
             elif rdkit_bond_stereo in [BondStereo.STEREOCIS, BondStereo.STEREOZ]:
                 bond_stereo = "\/"
@@ -117,5 +117,5 @@ def make_graph_hash(mol, use_atom_maps=False):
    
     m = hashlib.sha256()
     m.update(nx_hash_hex.encode('utf-8'))
-    
-    return int(str(int(m.hexdigest(), 16))[:16])
+
+    return int(str(int(m.hexdigest(), 16))[:32])

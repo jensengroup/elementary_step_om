@@ -7,6 +7,7 @@ import numpy as np
 
 
 from xtb.interface import Calculator as CalculatorAPI
+from xtb.interface import Molecule as MoleculeAPI
 from xtb.libxtb import VERBOSITY_MUTED
 from xtb.utils import get_solvent, get_method
 
@@ -262,7 +263,7 @@ class xTBPath:
         kpull_list = [-0.02, -0.02, -0.02, -0.02, -0.03, -0.03, -0.04, -0.04]
         alp_list = [0.6, 0.6, 0.3, 0.3, 0.6, 0.6, 0.6, 0.4]
 
-        def run_micro_iter(kpush, kpull, alpha, temp, run_num, reac_direction):
+        def run_micro_iter(kpush, kpull, alpha, run_num, reac_direction):
             """
             Only saves the initial search structure if the path search
             is uncussesfull.
@@ -319,7 +320,6 @@ class xTBPath:
             return False
 
         direction_forward = True
-        temperature = True
         i = 0
         for param_set_idx, (kpull, alpha) in enumerate(zip(kpull_list, alp_list)):
             if param_set_idx == 0:
@@ -328,7 +328,7 @@ class xTBPath:
                 kpush = 0.01
 
             if run_micro_iter(
-                kpush, kpull, alpha, temperature, param_set_idx, direction_forward
+                kpush, kpull, alpha, param_set_idx, direction_forward
             ):
                 return True
 
@@ -344,7 +344,7 @@ class xTBPath:
                 print()
                 print("Something happend but RMSD not bellow 0.5 RMSD.")
                 print("Most likely not a one step reaction.")
-                quit()
+                return "intermediate" # TODO: Do something different if this it hit.
 
             i += 1
             if i % 2 == 0:
@@ -367,14 +367,15 @@ class xTBPath:
         single_point_energies = np.zeros(len(coords))
         for i, coord in enumerate(coords):
             calc = CalculatorAPI(
-                get_method("GFN2-xTB"), atom_nums, coord * 1.8897259886
+                param=get_method("GFN2-xTB"), 
+                numbers=atom_nums,
+                positions=coord*1.8897259886,
+                charge=chrg,
+                # uhf=None
             )
             calc.set_verbosity(VERBOSITY_MUTED)
             if solvent is not None:
-                print("setting solvent")
                 calc.set_solvent(get_solvent(solvent))
-            if chrg != 0:
-                raise NotImplementedError("set charge")
             res = calc.singlepoint()
             single_point_energies[i] = res.get_energy()
         return single_point_energies * 627.503
@@ -406,19 +407,21 @@ class xTBPath:
 
     def run_barrer_scan(self, chrg=0, solvent=None, huckel=False, save_paths=False):
         """ """
-        # if a path isn't found try with higher temp.
-        if not self._find_xtb_path(
-            chrg=chrg, huckel=huckel, solvent=solvent, save_paths=save_paths
-        ):
+        return_msg_300 = self._find_xtb_path(
+            chrg=chrg, huckel=huckel, solvent=solvent, temp=300, save_paths=save_paths
+            )
+        
+        if return_msg_300 is False:
             print("Didn't find a path. Increasing the temperature.")
-            if self._find_xtb_path(
-                chrg=chrg,
-                huckel=huckel,
-                temp=6000,
-                solvent=solvent,
-                save_paths=save_paths,
-            ):
-                return np.nan
+            return_msg_6000 = self._find_xtb_path(
+                chrg=chrg, huckel=huckel, solvent=solvent, temp=6000, save_paths=save_paths
+                )
+            if return_msg_6000 is False:
+                print("No path is found!")
+                return float('nan'), None
+
+        elif return_msg_300 == "intermediate":
+            return float('nan'), None
 
         # If we found a path interpolate between structures max-1 and max+1.
         interpolated_energies, interpolated_coords = self._interpolate_ts(
