@@ -510,13 +510,13 @@ class Reaction:
         return self._reaction_hash == other._reaction_hash
 
     def __hash__(self):
-        # This is not OK if you take multiple steps.
         if self._reaction_hash is None:
             #self._reaction_hash = make_graph_hash(self.product.molecule, 
             #                                      use_atom_maps=True)
             m = hashlib.blake2b()
+            m.update(Chem.MolToSmiles(self.reactant.molecule).encode('utf-8'))
             m.update(Chem.MolToSmiles(self.product.molecule).encode('utf-8'))
-            self._mol_hash = int(str(int(m.hexdigest(), 16))[:32])
+            self._reaction_hash = int(str(int(m.hexdigest(), 16))[:32])
         return self._reaction_hash
     
     def get_fragments(self):
