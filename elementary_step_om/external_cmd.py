@@ -168,12 +168,18 @@ class xTBPath:
         return reactant_fname, product_fname
 
     def _run_xtb_path(
-        self, kpush, kpull, alpha, temp, solvent=None, forward_reaction=True
+        self,
+        kpush,
+        kpull,
+        alpha,
+        temp,
+        solvent=None,
+        chrg=0,
+        multiplicity=1,
+        forward_reaction=True,
     ):
 
-        __XTB_PATH__ = (
-            "/home/koerstz/projects/origin_of_life/small_tests/version_tests_xtb/6.1/xtb-190527"
-        )
+        __XTB_PATH__ = "/home/koerstz/projects/origin_of_life/small_tests/version_tests_xtb/6.1/xtb-190527"
 
         os.environ["XTBHOME"] = __XTB_PATH__ + "/bin"
         os.environ["OMP_STACKSIZE"] = str(self.memory) + "G"
@@ -186,14 +192,17 @@ class xTBPath:
         )
 
         os.system("ulimit -s unlimited")
-        # output = run_cmd(f"xtb {reac_fname} --path {prod_fname} --input path.inp --gfn2 --gbsa water")
+        #cmd = f"xtb {reac_fname} --path {prod_fname} --input path.inp --gfn2")
         cmd = f"{__XTB_PATH__}/bin/xtb {reac_fname} --path --input path.inp --gfn2"
         if solvent is not None:
             cmd += f" --gbsa {solvent}"
+        if chrg != 0:
+            cmd += f" --chrg {chrg}"
+        if multiplicity != 1:
+            cmd += f" --uhf {multiplicity-1}"
+
         output = run_cmd(cmd)
-
         self._finish_calculation()
-
         return output
 
     def _is_reaction_complete(self, output):
@@ -204,7 +213,7 @@ class xTBPath:
                 try:
                     rmsd = float(output_lines[line_number].split()[-1])
                     # print(rmsd)
-                except:  # This is only a temp solution. Delete later.
+                except:  
                     print(line)
                 if rmsd < 0.5:
                     return True
@@ -257,7 +266,13 @@ class xTBPath:
             return False
 
     def _find_xtb_path(
-        self, chrg=0, temp=300, solvent=None, huckel=False, save_paths=True
+        self,
+        chrg=0,
+        multiplicity=1,
+        temp=300,
+        solvent=None,
+        huckel=False,
+        save_paths=True,
     ):
         """"""
         kpull_list = [-0.02, -0.02, -0.02, -0.02, -0.03, -0.03, -0.04, -0.04]
@@ -285,6 +300,8 @@ class xTBPath:
                     alpha,
                     temp,
                     solvent=solvent,
+                    chrg=chrg,
+                    multiplicity=multiplicity,
                     forward_reaction=reac_direction,
                 )
 
@@ -294,7 +311,7 @@ class xTBPath:
                         f"../{self.reaction_name}",
                     )
                     print(
-                        f">> OK! kpush: {kpush:.4f}, kpull: {kpull:.4f}, alpha: {alpha}, temp: {temp}, solvent: {solvent}, forward?: {reac_direction}"
+                        f">> OK! kpush: {kpush:.4f}, kpull: {kpull:.4f}, alpha: {alpha}, temp: {temp}, forward?: {reac_direction}"
                     )
                     os.chdir("..")
                     if not save_paths:
@@ -302,7 +319,7 @@ class xTBPath:
                     return True
                 else:
                     print(
-                        f">> fail!: kpush: {kpush:.4f}, kpull: {kpull:.4f}, alpha: {alpha}, temp: {temp}, solvent: {solvent}, forward?: {reac_direction}"
+                        f">> fail!: kpush: {kpush:.4f}, kpull: {kpull:.4f}, alpha: {alpha}, temp: {temp}, forward?: {reac_direction}"
                     )
 
                 kpush *= float(1.5)
@@ -327,9 +344,7 @@ class xTBPath:
             else:
                 kpush = 0.01
 
-            if run_micro_iter(
-                kpush, kpull, alpha, param_set_idx, direction_forward
-            ):
+            if run_micro_iter(kpush, kpull, alpha, param_set_idx, direction_forward):
                 return True
 
             # Setup new path search with new parameter set, and update stuctures.
@@ -344,7 +359,7 @@ class xTBPath:
                 print()
                 print("Something happend but RMSD not bellow 0.5 RMSD.")
                 print("Most likely not a one step reaction.")
-                return "intermediate" # TODO: Do something different if this it hit.
+                return "intermediate"  # TODO: Do something different if this it hit.
 
             i += 1
             if i % 2 == 0:
@@ -354,7 +369,7 @@ class xTBPath:
 
         return False
 
-    def _get_single_point_energies(self, coords, solvent=None, chrg=0, npoints=20):
+    def _get_single_point_energies(self, coords, solvent=None, chrg=0, multiplicity=1):
         """ Compute single point energies"""
 
         pt = Chem.GetPeriodicTable()
@@ -366,13 +381,21 @@ class xTBPath:
         )
         single_point_energies = np.zeros(len(coords))
         for i, coord in enumerate(coords):
-            calc = CalculatorAPI(
-                param=get_method("GFN2-xTB"), 
-                numbers=atom_nums,
-                positions=coord*1.8897259886,
-                charge=chrg,
-                # uhf=None
-            )
+            if multiplicity != 1:
+                calc = CalculatorAPI(
+                    param=get_method("GFN2-xTB"),
+                    numbers=atom_nums,
+                    positions=coord * 1.8897259886,
+                    charge=chrg,
+                    uhf=multiplicity - 1,
+                )
+            else:
+                calc = CalculatorAPI(
+                    param=get_method("GFN2-xTB"),
+                    numbers=atom_nums,
+                    positions=coord * 1.8897259886,
+                    charge=chrg,
+                )
             calc.set_verbosity(VERBOSITY_MUTED)
             if solvent is not None:
                 calc.set_solvent(get_solvent(solvent))
@@ -380,10 +403,12 @@ class xTBPath:
             single_point_energies[i] = res.get_energy()
         return single_point_energies * 627.503
 
-    def _interpolate_ts(self, solvent=None, chrg=0, npoints=20):
-        """ TODO set atomic charge"""
+    def _interpolate_ts(self, solvent=None, chrg=0, multiplicity=1, npoints=20):
+        """ """
         _, coords = self._read_complete_path()
-        energies = self._get_single_point_energies(coords, solvent=solvent, chrg=chrg)
+        energies = self._get_single_point_energies(
+            coords, solvent=solvent, chrg=chrg, multiplicity=multiplicity
+        )
 
         max_energy_idx = energies.argmax()
 
@@ -400,32 +425,44 @@ class xTBPath:
             )
 
         interpolated_energies = self._get_single_point_energies(
-            interpolated_path_coords, solvent=solvent, chrg=chrg
+            interpolated_path_coords, solvent=solvent, chrg=chrg, multiplicity=multiplicity
         )
 
         return interpolated_energies, interpolated_path_coords
 
-    def run_barrer_scan(self, chrg=0, solvent=None, huckel=False, save_paths=False):
+    def run_barrer_scan(
+        self, chrg=0, multiplicity=1, solvent=None, huckel=False, save_paths=False
+    ):
         """ """
         return_msg_300 = self._find_xtb_path(
-            chrg=chrg, huckel=huckel, solvent=solvent, temp=300, save_paths=save_paths
-            )
-        
+            chrg=chrg,
+            multiplicity=multiplicity,
+            huckel=huckel,
+            solvent=solvent,
+            temp=300,
+            save_paths=save_paths,
+        )
+
         if return_msg_300 is False:
             print("Didn't find a path. Increasing the temperature.")
             return_msg_6000 = self._find_xtb_path(
-                chrg=chrg, huckel=huckel, solvent=solvent, temp=6000, save_paths=save_paths
-                )
+                chrg=chrg,
+                multiplicity=multiplicity,
+                huckel=huckel,
+                solvent=solvent,
+                temp=6000,
+                save_paths=save_paths,
+            )
             if return_msg_6000 is False:
                 print("No path is found!")
-                return float('nan'), None
+                return float("nan"), None
 
         elif return_msg_300 == "intermediate":
-            return float('nan'), None
+            return float("nan"), None
 
         # If we found a path interpolate between structures max-1 and max+1.
         interpolated_energies, interpolated_coords = self._interpolate_ts(
-            solvent=solvent, chrg=chrg, npoints=20
+            solvent=solvent, chrg=chrg, multiplicity=multiplicity, npoints=20
         )
         ts_idx = interpolated_energies.argmax()
 
