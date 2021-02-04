@@ -192,7 +192,7 @@ class xTBPath:
         )
 
         os.system("ulimit -s unlimited")
-        #cmd = f"xtb {reac_fname} --path {prod_fname} --input path.inp --gfn2")
+        # cmd = f"xtb {reac_fname} --path {prod_fname} --input path.inp --gfn2")
         cmd = f"{__XTB_PATH__}/bin/xtb {reac_fname} --path --input path.inp --gfn2"
         if solvent is not None:
             cmd += f" --gbsa {solvent}"
@@ -213,7 +213,7 @@ class xTBPath:
                 try:
                     rmsd = float(output_lines[line_number].split()[-1])
                     # print(rmsd)
-                except:  
+                except:
                     print(line)
                 if rmsd < 0.5:
                     return True
@@ -425,12 +425,15 @@ class xTBPath:
             )
 
         interpolated_energies = self._get_single_point_energies(
-            interpolated_path_coords, solvent=solvent, chrg=chrg, multiplicity=multiplicity
+            interpolated_path_coords,
+            solvent=solvent,
+            chrg=chrg,
+            multiplicity=multiplicity,
         )
 
         return interpolated_energies, interpolated_path_coords
 
-    def run_barrer_scan(
+    def _run_barrer_scan(
         self, chrg=0, multiplicity=1, solvent=None, huckel=False, save_paths=False
     ):
         """ """
@@ -467,6 +470,35 @@ class xTBPath:
         ts_idx = interpolated_energies.argmax()
 
         return interpolated_energies[ts_idx], interpolated_coords[ts_idx]
+
+    def run_barrier_scan(
+        self,
+        nruns=3,
+        chrg=0,
+        multiplicity=1,
+        solvent=None,
+        huckel=False,
+        save_paths=False,
+    ):
+        """Run barrier scan nruns times, and return the minimum energy and corresponding
+        coordinates.
+        """
+        ts_energy, ts_coords = 9999.9, None
+        for _ in range(nruns):
+            energy, coords = self._run_barrer_scan(
+                nruns=nruns,
+                chrg=chrg,
+                multiplicity=multiplicity,
+                solvent=solvent,
+                huckel=huckel,
+                save_paths=save_paths,
+            )
+
+            if energy < ts_energy:
+                ts_energy = ts_energy
+                ts_coords = coords
+
+        return ts_energy, ts_coords
 
     def write_xyz(self, atoms, coords, fname=""):
         """ """
