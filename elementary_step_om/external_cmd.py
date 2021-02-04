@@ -179,7 +179,8 @@ class xTBPath:
         forward_reaction=True,
     ):
 
-        __XTB_PATH__ = "/home/koerstz/projects/origin_of_life/small_tests/version_tests_xtb/6.1/xtb-190527"
+        #__XTB_PATH__ = "/home/koerstz/projects/origin_of_life/small_tests/version_tests_xtb/6.1/xtb-190527"
+        __XTB_PATH__ = "/groups/kemi/koerstz/opt/xtb/6.1"
 
         os.environ["XTBHOME"] = __XTB_PATH__ + "/bin"
         os.environ["OMP_STACKSIZE"] = str(self.memory) + "G"
@@ -471,7 +472,7 @@ class xTBPath:
 
         return interpolated_energies[ts_idx], interpolated_coords[ts_idx]
 
-    def run_barrier_scan(
+    def run_barrier_scan_ntimes(
         self,
         nruns=3,
         chrg=0,
@@ -483,10 +484,9 @@ class xTBPath:
         """Run barrier scan nruns times, and return the minimum energy and corresponding
         coordinates.
         """
-        ts_energy, ts_coords = 9999.9, None
+        ts_energy, ts_coords = 99999.9, None
         for _ in range(nruns):
             energy, coords = self._run_barrer_scan(
-                nruns=nruns,
                 chrg=chrg,
                 multiplicity=multiplicity,
                 solvent=solvent,
@@ -495,8 +495,11 @@ class xTBPath:
             )
 
             if energy < ts_energy:
-                ts_energy = ts_energy
+                ts_energy = energy
                 ts_coords = coords
+
+        if ts_energy == 99999.9:
+            ts_energy = np.float('nan')
 
         return ts_energy, ts_coords
 

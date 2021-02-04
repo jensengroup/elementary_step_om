@@ -200,16 +200,18 @@ class Molecule:
         for frag in Chem.GetMolFrags(self.molecule, asMols=True, sanitizeFrags=False):
             fragments.append(Fragment.from_rdkit_mol(frag))
         return fragments
-    
+
     def _embed_fragment(self, frag_rdkit, nconfs=20, uffSteps=5_000, seed=20):
         """ """
-        p = Chem.rdDistGeom.srETKDGv3()
+        p = AllChem.ETKDGv3()
+        p.useRandomCoords = True
+        p.randomSeed=seed
         try:  # Can the fragment actually be embedded?
-            rdDistGeom.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
+            AllChem.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
         except RuntimeError:
             print(f"RDKit Failed to embed: {self.label}.")
             return None, False
-        
+
         tmp_frag_mol = copy.deepcopy(frag_rdkit)
         confid = AllChem.EmbedMolecule(tmp_frag_mol)
         conformers = []
@@ -473,7 +475,7 @@ class Fragment(Molecule):
     def relax_conformers(self, nprocs=4):
         """ """
         if self._embed_ok is True:  # Check that embeding is ok
-            with mp.Pool(nprocs) as pool:
+            with mp.Pool(int(nprocs)) as pool:
                 results = pool.map(self.worker, self._conformers)
             for i, conf in enumerate(self._conformers):
                 converged = results[i].pop('converged')
@@ -581,12 +583,12 @@ class Reaction:
         self.product._embed_ok = True
         self.reactant._embed_ok = True
 
-    def get_ts_estimate(self, solvent=None, charge=0, refine=True, save_paths=False, huckel=False):
+    def get_ts_estimate(self, nruns=3, solvent=None, charge=0, multiplicity=1, refine=True, save_paths=False, huckel=False):
         """
         """
         self._embed_molecules_appart(chrg=charge, refine=refine)
 
         run_reaction = xTBPath(self, label=self._reaction_label)
-        self.ts_energy, self.ts_coords = run_reaction.run_barrer_scan(chrg=charge, solvent=solvent, huckel=huckel, save_paths=save_paths)
+        self.ts_energy, self.ts_coords = run_reaction.run_barrier_scan_ntimes(nruns=3, chrg=charge, solvent=solvent, huckel=huckel, save_paths=save_paths)
 
         return self.ts_energy

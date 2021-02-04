@@ -3,7 +3,8 @@ import pickle
 
 from rdkit import Chem
 
-sys.path.append('/home/koerstz/github/elementary_step_om')
+sys.path.append('/groups/kemi/koerstz/git/elementary_step_om')
+
 
 if __name__ == '__main__':
 
@@ -18,7 +19,8 @@ if __name__ == '__main__':
         print(f"Path search for: {reaction._reaction_label}")
 
         chrg = Chem.GetFormalCharge(reaction.reactant.molecule)
-        reaction.get_ts_estimate(solvent='water', charge=chrg, refine=True)
+        spin = 1
+        reaction.get_ts_estimate(solvent=None, charge=chrg, multiplicity=spin, nruns=3, refine=True)
         output_reactions.append(reaction)
         print()
 
