@@ -74,18 +74,19 @@ def get_most_rigid_resonance(mol):
     all_resonance_structures = [res for res in rdchem.ResonanceMolSupplier(mol,
                                 ResonanceFlags.UNCONSTRAINED_ANIONS)]
 
-    if len(all_resonance_structures) <= 1: # 0 is kind weird
-        return mol
-    else:
-        min_rot_bonds = 9999
-        for res in all_resonance_structures:
-            Chem.SanitizeMol(res)
-            num_rot_bonds = rdMolDescriptors.CalcNumRotatableBonds(res)
-            if num_rot_bonds < min_rot_bonds:
-                most_rigid_res = copy.deepcopy(res)
-                min_rot_bonds = num_rot_bonds
-
+    min_rot_bonds = 9999
+    most_rigid_res = copy.deepcopy(mol)
+    if len(all_resonance_structures) <=1: # 0 is kind weird
         return most_rigid_res
+
+    for res in all_resonance_structures:
+        Chem.SanitizeMol(res)
+        num_rot_bonds = rdMolDescriptors.CalcNumRotatableBonds(res)
+        if num_rot_bonds < min_rot_bonds:
+            most_rigid_res = copy.deepcopy(res)
+            min_rot_bonds = num_rot_bonds
+
+    return most_rigid_res
 
 
 def reassign_atom_idx(mol):
