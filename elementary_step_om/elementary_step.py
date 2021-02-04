@@ -33,6 +33,7 @@ max_valence[35] = [0, 1]
 max_valence[53] = [0, 1]
 
 
+# TODO: make a version that can be compiled
 def valid_product(product_adj_matrix, atomic_num):
     """ Check that the produces product is valid according to the valence"""
     product_valence = product_adj_matrix.sum(axis=1, dtype=np.int16)
@@ -40,6 +41,32 @@ def valid_product(product_adj_matrix, atomic_num):
         if valence > max_valence[atom][1] or valence == max_valence[atom][0]:
             return False
     return True
+
+# TODO: make a version that can be compiled
+def parallel_reactions(I, frag_idx): 
+    """ I a parallel reaction? 
+    
+    A parallel reaction is when two fragments A B becomes A' B'
+    but doesn't create a bond between the two fragments.
+    However, when A B becomes A' B or A B' it's not a parrallel reaction.
+    """
+    if len(frag_idx) == 1: # Only one fragment.
+        return False
+
+    num_frags = len(frag_idx)
+    frag_change_matrix = np.zeros((num_frags, num_frags), dtype=np.int32)
+    for i, frag_i in enumerate(frag_idx):
+        for j, frag_j in enumerate(frag_idx):
+            m = I[np.ix_(frag_i, frag_j)]
+            frag_change_matrix[i,j] = not np.all(m == 0)
+    
+    off_diagonal = frag_change_matrix[~np.eye(frag_change_matrix.shape[0],dtype=bool)].sum()
+    diagonal = frag_change_matrix[np.eye(frag_change_matrix.shape[0],dtype=bool)].sum()
+
+    if off_diagonal == 0 and diagonal < 1: 
+        return True
+    
+    return False
 
 
 def get_most_rigid_resonance(mol):
@@ -145,6 +172,10 @@ def valid_products(reactant, n=2, cd=4, charge=0, n_procs=1):
     reactant_adj_matrix = Chem.GetAdjacencyMatrix(reactant)
     atomic_num = [atom.GetAtomicNum() for atom in reactant.GetAtoms()]
 
+    frag_idx = []
+    for frag in Chem.GetMolFrags(reactant, asMols=True, sanitizeFrags=False):
+        frag_idx.append([atom.GetAtomMapNum()-1 for atom in frag.GetAtoms()])
+
     # Create the one bond conversion matrices
     adjacency_matrix_shape = reactant_adj_matrix.shape
     make1, break1 = [], []
@@ -173,8 +204,12 @@ def valid_products(reactant, n=2, cd=4, charge=0, n_procs=1):
     for num_make, num_brake in comb_to_check[1:]:  # excluding reactant 0,0
         for conv_matrix in prod(comb(make1, num_make), comb(break1, num_brake)):
             conversion_matrix = np.array(sum(conv_matrix, ())).sum(axis=0)
-            product_adj_matrix = reactant_adj_matrix + conversion_matrix
+            
+            # if it's a parallel reaction, continue.
+            if parallel_reactions(conversion_matrix, frag_idx):
+                continue
 
+            product_adj_matrix = reactant_adj_matrix + conversion_matrix
             if valid_product(product_adj_matrix, atomic_num):
                 valid_prod_ac_matrices.append(product_adj_matrix)
 
@@ -185,4 +220,7 @@ def valid_products(reactant, n=2, cd=4, charge=0, n_procs=1):
 
     for mol in mols:
         for isomer in set_chirality(mol, reactant):
+            # Reinitialize the RDKit mol, which ensures it is valid.
+            isomer = Chem.MolFromMolBlock(Chem.MolToMolBlock(isomer), sanitize=False)
+            Chem.SanitizeMol(isomer)
             yield isomer
