@@ -6,8 +6,7 @@ import copy
 import numpy as np
 
 
-from xtb.interface import Calculator as CalculatorAPI
-from xtb.interface import Molecule as MoleculeAPI
+from xtb.interface import Calculator as xTBcalc
 from xtb.libxtb import VERBOSITY_MUTED
 from xtb.utils import get_solvent, get_method
 
@@ -57,10 +56,33 @@ class xTB(Calculator):
     def _make_cmd(self, xtb_args):
         xtb_kwds = "--norestart --strict "
         for arg, value in xtb_args.items():
-            if value in [None, ""]:
-                xtb_kwds += f"--{arg.lower()} "
-            else:
+            if arg not in ['gfn', 'opt', 'uhf', 'chrg', 'gbsa', 'alpb']:
+                raise NotImplementedError(f'xTB kwd "{arg}" not considered in code.')
+            
+            # Type check
+            if arg in ['gfn', 'uhf', 'chrg']:
+                if not isinstance(value, int):
+                    raise RuntimeError(f'xTB kwd "{arg}" should be an int.')
+
+            elif arg in ['opt', 'gbsa', 'alpb']:
+                if not isinstance(value, str):
+                    raise RuntimeError(f'xTB kwd "{arg}" should be a str.')
+            
+            # Set keywords
+            if arg in ['opt', 'gfn', 'gbsa', 'alpb']:
+                if value == "" and arg != 'opt':
+                    continue
                 xtb_kwds += f"--{arg.lower()} {value.lower()} "
+            elif arg == 'chrg':
+                if value == 0:
+                    continue
+                xtb_kwds += f"--{arg.lower()} {value} "
+            elif arg == 'uhf':
+                if value == 1:
+                    continue
+                value -= 1
+                xtb_kwds += f"--{arg.lower()} {value} "
+
         return xtb_kwds
 
     def write_input(self):
@@ -96,20 +118,36 @@ class xTB(Calculator):
 
 class xTBPath:
     """ """
-
-    def __init__(self, reaction, label="reaction", cpus=1, memory=3):
+    def __init__(self, reaction, label="reaction", spin=1, charge=0, solvent="", cpus=1, memory=3):
 
         self.reaction = reaction
         self.nprocs = cpus
         self.memory = memory
 
         self.reaction_name = label
+        self._spin = spin
+        self._charge = charge
+        self._solvent = solvent
+
+        self._add_xtb_kwds = self._additional_xtb_kwds()
 
         self.npaths = 0
         self._initialize_path_search()
 
-    def _initialize_path_search(self):
+    def _additional_xtb_kwds(self):
+        """ """
+        kwds = " "
+        if self._spin != 1:
+            kwds += f"--uhf {self._spin - 1} "
+        if self._charge != 0:
+            kwds += f"--chrg {self._charge} "
+        if self._solvent != "":
+            kwds += f"--gbsa {self._solvent} "
 
+        return kwds 
+
+    def _initialize_path_search(self):
+        """ """
         self.path_reactant = copy.deepcopy(self.reaction.reactant)
         self.path_product = copy.deepcopy(self.reaction.product)
 
@@ -167,20 +205,10 @@ class xTBPath:
 
         return reactant_fname, product_fname
 
-    def _run_xtb_path(
-        self,
-        kpush,
-        kpull,
-        alpha,
-        temp,
-        solvent=None,
-        chrg=0,
-        multiplicity=1,
-        forward_reaction=True,
-    ):
+    def _run_xtb_path(self, kpush, kpull, alpha, temp, forward_reaction=True):
 
-        #__XTB_PATH__ = "/home/koerstz/projects/origin_of_life/small_tests/version_tests_xtb/6.1/xtb-190527"
-        __XTB_PATH__ = "/groups/kemi/koerstz/opt/xtb/6.1"
+        __XTB_PATH__ = "/home/koerstz/projects/origin_of_life/small_tests/version_tests_xtb/6.1/xtb-190527"
+        #__XTB_PATH__ = "/groups/kemi/koerstz/opt/xtb/6.1"
 
         os.environ["XTBHOME"] = __XTB_PATH__ + "/bin"
         os.environ["OMP_STACKSIZE"] = str(self.memory) + "G"
@@ -195,13 +223,7 @@ class xTBPath:
         os.system("ulimit -s unlimited")
         # cmd = f"xtb {reac_fname} --path {prod_fname} --input path.inp --gfn2")
         cmd = f"{__XTB_PATH__}/bin/xtb {reac_fname} --path --input path.inp --gfn2"
-        if solvent is not None:
-            cmd += f" --gbsa {solvent}"
-        if chrg != 0:
-            cmd += f" --chrg {chrg}"
-        if multiplicity != 1:
-            cmd += f" --uhf {multiplicity-1}"
-
+        cmd += self._add_xtb_kwds
         output = run_cmd(cmd)
         self._finish_calculation()
         return output
@@ -213,8 +235,8 @@ class xTBPath:
             if "run 1  barrier" in line:
                 try:
                     rmsd = float(output_lines[line_number].split()[-1])
-                    # print(rmsd)
                 except:
+                    rmsd = 9999.9 # rmsd above 0.5 reaction not complete.
                     print(line)
                 if rmsd < 0.5:
                     return True
@@ -246,7 +268,7 @@ class xTBPath:
 
         return energies, path_coords
 
-    def _is_reac_prod_identical(self, charge=0, huckel=False):
+    def _is_reac_prod_identical(self, charge=0):
         """
         This function ensures that if RMSD is above 0.5AA, and something
         happend in the last iteration - it is probably an intermediate.
@@ -258,23 +280,15 @@ class xTBPath:
             for atom in self.path_reactant._conformers[0]._atom_symbols
         ]
 
-        reactant_ac, _ = xyz2AC(atom_nums, path_coords[0], charge, use_huckel=huckel)
-        product_ac, _ = xyz2AC(atom_nums, path_coords[-1], charge, use_huckel=huckel)
+        reactant_ac, _ = xyz2AC(atom_nums, path_coords[0], charge, use_huckel=False)
+        product_ac, _ = xyz2AC(atom_nums, path_coords[-1], charge, use_huckel=False)
 
         if np.array_equal(reactant_ac, product_ac):  # Nothing happend - reac = prod
             return True
         else:
             return False
 
-    def _find_xtb_path(
-        self,
-        chrg=0,
-        multiplicity=1,
-        temp=300,
-        solvent=None,
-        huckel=False,
-        save_paths=True,
-    ):
+    def _find_xtb_path(self, temp=300, save_paths=True):
         """"""
         kpull_list = [-0.02, -0.02, -0.02, -0.02, -0.03, -0.03, -0.04, -0.04]
         alp_list = [0.6, 0.6, 0.3, 0.3, 0.6, 0.6, 0.6, 0.4]
@@ -295,16 +309,7 @@ class xTBPath:
                 kpush = round(kpush, 4)
                 kpull = round(kpull, 4)
 
-                output = self._run_xtb_path(
-                    kpush,
-                    kpull,
-                    alpha,
-                    temp,
-                    solvent=solvent,
-                    chrg=chrg,
-                    multiplicity=multiplicity,
-                    forward_reaction=reac_direction,
-                )
+                output = self._run_xtb_path(kpush, kpull, alpha, temp, forward_reaction=reac_direction)
 
                 if self._is_reaction_complete(output):
                     shutil.copytree(
@@ -370,7 +375,7 @@ class xTBPath:
 
         return False
 
-    def _get_single_point_energies(self, coords, solvent=None, chrg=0, multiplicity=1):
+    def _get_single_point_energies(self, coords):
         """ Compute single point energies"""
 
         pt = Chem.GetPeriodicTable()
@@ -382,34 +387,31 @@ class xTBPath:
         )
         single_point_energies = np.zeros(len(coords))
         for i, coord in enumerate(coords):
-            if multiplicity != 1:
-                calc = CalculatorAPI(
-                    param=get_method("GFN2-xTB"),
-                    numbers=atom_nums,
-                    positions=coord * 1.8897259886,
-                    charge=chrg,
-                    uhf=multiplicity - 1,
-                )
-            else:
-                calc = CalculatorAPI(
-                    param=get_method("GFN2-xTB"),
-                    numbers=atom_nums,
-                    positions=coord * 1.8897259886,
-                    charge=chrg,
-                )
+            method = get_method("GFN2-xTB")
+            coord *= 1.8897259886 # convert To Bohr
+            
+            # Set calculator - Is this nessesary.
+            if self._spin == 1 and self._charge == 0:
+                calc = xTBcalc(param=method, numbers=atom_nums, positions=coord) 
+            elif self._spin == 1 and self._charge != 0:
+                calc = xTBcalc(param=method, numbers=atom_nums, positions=coord, charge=self._charge)
+            elif self._spin != 1 and self._charge == 0:
+                calc = xTBcalc(param=method, numbers=atom_nums, positions=coord, uhf=self._spin - 1)
+            else: # self._spin != 1 and self._spin != 0:               
+                calc = xTBcalc(param=method, numbers=atom_nums, positions=coord, charge=self._charge, uhf=self._spin-1)
+
+            if self._solvent != "":
+                calc.set_solvent(get_solvent(self._solvent))
+
             calc.set_verbosity(VERBOSITY_MUTED)
-            if solvent is not None:
-                calc.set_solvent(get_solvent(solvent))
             res = calc.singlepoint()
             single_point_energies[i] = res.get_energy()
         return single_point_energies * 627.503
 
-    def _interpolate_ts(self, solvent=None, chrg=0, multiplicity=1, npoints=20):
+    def _interpolate_ts(self, npoints=20):
         """ """
         _, coords = self._read_complete_path()
-        energies = self._get_single_point_energies(
-            coords, solvent=solvent, chrg=chrg, multiplicity=multiplicity
-        )
+        energies = self._get_single_point_energies(coords)
 
         max_energy_idx = energies.argmax()
 
@@ -424,39 +426,16 @@ class xTBPath:
             interpolated_path_coords[j - 1] = (
                 coords[max_energy_idx + 1] + j / npoints * difference_mat
             )
-
-        interpolated_energies = self._get_single_point_energies(
-            interpolated_path_coords,
-            solvent=solvent,
-            chrg=chrg,
-            multiplicity=multiplicity,
-        )
-
+        interpolated_energies = self._get_single_point_energies(interpolated_path_coords)
         return interpolated_energies, interpolated_path_coords
 
-    def _run_barrer_scan(
-        self, chrg=0, multiplicity=1, solvent=None, huckel=False, save_paths=False
-    ):
+    def _run_barrer_scan(self, save_paths=False):
         """ """
-        return_msg_300 = self._find_xtb_path(
-            chrg=chrg,
-            multiplicity=multiplicity,
-            huckel=huckel,
-            solvent=solvent,
-            temp=300,
-            save_paths=save_paths,
-        )
+        return_msg_300 = self._find_xtb_path(temp=300, save_paths=save_paths)
 
         if return_msg_300 is False:
             print("Didn't find a path. Increasing the temperature.")
-            return_msg_6000 = self._find_xtb_path(
-                chrg=chrg,
-                multiplicity=multiplicity,
-                huckel=huckel,
-                solvent=solvent,
-                temp=6000,
-                save_paths=save_paths,
-            )
+            return_msg_6000 = self._find_xtb_path(temp=6000,save_paths=save_paths)
             if return_msg_6000 is False:
                 print("No path is found!")
                 return float("nan"), None
@@ -465,34 +444,18 @@ class xTBPath:
             return float("nan"), None
 
         # If we found a path interpolate between structures max-1 and max+1.
-        interpolated_energies, interpolated_coords = self._interpolate_ts(
-            solvent=solvent, chrg=chrg, multiplicity=multiplicity, npoints=20
-        )
+        interpolated_energies, interpolated_coords = self._interpolate_ts(npoints=20)
         ts_idx = interpolated_energies.argmax()
 
         return interpolated_energies[ts_idx], interpolated_coords[ts_idx]
 
-    def run_barrier_scan_ntimes(
-        self,
-        nruns=3,
-        chrg=0,
-        multiplicity=1,
-        solvent=None,
-        huckel=False,
-        save_paths=False,
-    ):
+    def run_barrier_scan_ntimes(self, nruns=3, save_paths=False):
         """Run barrier scan nruns times, and return the minimum energy and corresponding
         coordinates.
         """
         ts_energy, ts_coords = 99999.9, None
         for _ in range(nruns):
-            energy, coords = self._run_barrer_scan(
-                chrg=chrg,
-                multiplicity=multiplicity,
-                solvent=solvent,
-                huckel=huckel,
-                save_paths=save_paths,
-            )
+            energy, coords = self._run_barrer_scan(save_paths=save_paths)
 
             if energy < ts_energy:
                 ts_energy = energy

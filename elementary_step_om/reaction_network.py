@@ -6,13 +6,12 @@ import os
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
-from rdkit.Chem import rdmolfiles, AllChem, rdchem, rdmolops
+from rdkit.Chem import AllChem, rdmolops
 from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers
 from rdkit.Chem.EnumerateStereoisomers import StereoEnumerationOptions
 
 from .elementary_step import valid_products
 from .compound import Molecule, Fragment, Reaction
-from .utils import make_graph_hash
 
 class ReactionNetwork:
     def __init__(
@@ -146,10 +145,6 @@ class ReactionNetwork:
             
         #if self._new_nodes(new_nodes): # If no new nodes, don't add them.
         unique_new_nodes = self._new_nodes(new_nodes)
-        ntest = []
-        for x, _ in unique_new_nodes:
-            ntest.append(x)
-        print(len(set(ntest)))
         self.network.add_nodes_from(unique_new_nodes)
 
         unique_edges = self._new_edges(new_edges) # removes duplicated edges.

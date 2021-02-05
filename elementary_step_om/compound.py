@@ -213,7 +213,7 @@ class Molecule:
             return None, False
 
         tmp_frag_mol = copy.deepcopy(frag_rdkit)
-        confid = AllChem.EmbedMolecule(tmp_frag_mol)
+        confid = AllChem.EmbedMolecule(tmp_frag_mol, params=p)
         conformers = []
         if confid >= 0:  # if RDKit can't embed confid = -1
             tmp_frag_conf = tmp_frag_mol.GetConformer()
@@ -466,7 +466,7 @@ class Fragment(Molecule):
         
         openbabel dependency might be eliminated at a later stage.
         """
-        rdkit_mol = self._dative2covalent(self.molecule)  # copy of rdkit_mol with covalent bonds
+        rdkit_mol = self._dative2covalent(self.molecule)  # copy of rdkit_mol with covalent bonds broken
 
         self._conformers, self._embed_ok = self._embed_fragment(rdkit_mol, nconfs=nconfs, uffSteps=uffSteps, seed=seed)
         if self._embed_ok is not True:
@@ -531,7 +531,7 @@ class Reaction:
 
         return self._reactant_frags,  self._product_frags
     
-    def _embed_molecules_appart(self, chrg=0, refine=True):
+    def _embed_molecules_appart(self, chrg=0, solvent="", multiplicity=1, refine=True):
         """ 
         """
         self.get_fragments() 
@@ -559,9 +559,13 @@ class Reaction:
             combined_mol = Chem.RenumberAtoms(combined_mol, atom_map_order.tolist())
 
             if refine:
-                #print("Refineing embeded conformers with xTB. Check structures after refinement.")
-                #warnings.warn("Refineing embeded conformers with xTB. Test input structures.", RuntimeWarning)
-                xtb = xTB({'opt': 'normal', 'alpb': 'water', 'chrg': chrg }) # TODO change charge
+                refine_args = {
+                    'opt': '', # normal --opt 
+                    'gbsa': solvent,
+                    'chrg': chrg,
+                    'uhf': multiplicity
+                }
+                xtb = xTB(xtb_args=refine_args) 
                 conf = Conformer(sdf=Chem.MolToMolBlock(combined_mol), label='some_label')
                 conf.set_calculator(xtb)
                 conf.relax_conformer()
@@ -583,12 +587,22 @@ class Reaction:
         self.product._embed_ok = True
         self.reactant._embed_ok = True
 
-    def get_ts_estimate(self, nruns=3, solvent=None, charge=0, multiplicity=1, refine=True, save_paths=False, huckel=False):
+    def get_ts_estimate(self, nruns=3, solvent="", charge=0, spin=1, refine=True, save_paths=False):
         """
         """
-        self._embed_molecules_appart(chrg=charge, refine=refine)
+        self._embed_molecules_appart(
+            chrg=charge, 
+            solvent=solvent,
+            multiplicity=spin,
+            refine=refine)
 
-        run_reaction = xTBPath(self, label=self._reaction_label)
-        self.ts_energy, self.ts_coords = run_reaction.run_barrier_scan_ntimes(nruns=3, chrg=charge, solvent=solvent, huckel=huckel, save_paths=save_paths)
+        xtb_path = xTBPath(self,
+            label=self._reaction_label,
+            charge=charge,
+            spin=spin,
+            solvent=solvent
+            )
+
+        self.ts_energy, self.ts_coords = xtb_path.run_barrier_scan_ntimes(nruns=nruns, save_paths=save_paths)
 
         return self.ts_energy
