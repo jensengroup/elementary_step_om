@@ -2,6 +2,7 @@ import networkx as nx
 import pickle
 import numpy as np
 import copy
+import os
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -194,8 +195,9 @@ class ReactionNetwork:
         """  """
         for start_node, end_node, edge_key, reaction in self.network.edges(
             data="reaction", keys=True
-        ):
-            reac_frags, prod_frags = reaction.get_fragments()
+        ):  
+            reac_frags = self.network.nodes[start_node]['canonical_reactant'].get_fragments()
+            prod_frags = self.network.nodes[end_node]['canonical_reactant'].get_fragments()
 
             reac_energy = self._mol_energy(reac_frags)
             prod_energy = self._mol_energy(prod_frags)
@@ -236,7 +238,7 @@ class ReactionNetwork:
         self.network.remove_edges_from(edges_to_remove)
         self.network.remove_nodes_from(list(nx.isolates(self.network)))
 
-    def get_unique_new_fragments(self, filename=None):
+    def get_unique_new_fragments(self, filename=None, overwrite=True):
         """ """ 
         fragments = []
         for node_name, reactant in self.network.nodes(data="canonical_reactant"):
@@ -245,9 +247,14 @@ class ReactionNetwork:
                     fragments.append(fragment)
         unique_fragments = list(set(fragments))
         
-        if filename is not None:
+        if os.path.exists(filename):
+            if overwrite:
+                with open(filename, 'wb') as _file:
+                    pickle.dump(unique_fragments, _file)
+        
+        elif not os.path.exists(filename) and filename is not None:
             with open(filename, 'wb') as _file:
-                pickle.dump(unique_fragments, _file)
+                    pickle.dump(unique_fragments, _file)
 
         return unique_fragments
     
@@ -272,7 +279,7 @@ class ReactionNetwork:
     def node_from_hash(self, hash_key):
         return self.network.nodes[hash_key]
 
-    def get_unique_reactions(self, filename=None):
+    def get_unique_reactions(self, filename=None, overwrite=True):
         """  """ 
         unique_reactions = []
         for node_in, node_out, reaction in self.network.edges(data='reaction'):
@@ -280,9 +287,14 @@ class ReactionNetwork:
                 self._unique_reactions[reaction.__hash__()] = reaction
                 unique_reactions.append(reaction)
         
-        if filename is not None:
+        if os.path.exists(filename):
+            if overwrite:
+                with open(filename, 'wb') as _file:
+                    pickle.dump(unique_reactions, _file)
+        
+        elif not os.path.exists(filename) and filename is not None:
             with open(filename, 'wb') as _file:
-                pickle.dump(unique_reactions, _file)
+                    pickle.dump(unique_reactions, _file)
 
         return unique_reactions
 
