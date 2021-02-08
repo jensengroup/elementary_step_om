@@ -534,8 +534,6 @@ class Reaction:
     def _embed_molecules_appart(self, chrg=0, solvent="", multiplicity=1, refine=True):
         """ 
         """
-        self.get_fragments() 
-
         def merge_fragments(frags):
             """ """
             if len(frags) == 1:
@@ -560,7 +558,7 @@ class Reaction:
 
             if refine:
                 refine_args = {
-                    'opt': '', # normal --opt 
+                    'opt': '', # normal opt 
                     'gbsa': solvent,
                     'chrg': chrg,
                     'uhf': multiplicity
@@ -575,6 +573,7 @@ class Reaction:
                 return Conformer(sdf=Chem.MolToMolBlock(combined_mol), label='label-some')
         
         # Embed fragments
+        self.get_fragments() 
         for reac_frag in self._reactant_frags:
             reac_frag.make_conformers_rdkit(nconfs=1)  # Embed each fragment alone
         
@@ -606,3 +605,14 @@ class Reaction:
         self.ts_energy, self.ts_coords = xtb_path.run_barrier_scan_ntimes(nruns=nruns, save_paths=save_paths)
 
         return self.ts_energy
+
+    def write_ts_xyz(self):
+        """ """    
+        symbols = [atom.GetSymbol() for atom in self.reactant.molecule.GetAtoms()]
+        xyz = f"{len(symbols)}\n {self._reaction_label} \n"
+        for symbol, coord in zip(symbols, self.ts_coords):
+            xyz += f"{symbol}  " + " ".join(map(str, coord)) + "\n"
+
+        with open(self._reaction_label + '.xyz', 'w') as fout:
+            fout.write(xyz)
+        

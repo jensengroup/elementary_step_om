@@ -377,6 +377,7 @@ class xTBPath:
 
     def _get_single_point_energies(self, coords):
         """ Compute single point energies"""
+        coords = copy.deepcopy(coords) * 1.8897259886 # Convert to bohr for xTB C-API
 
         pt = Chem.GetPeriodicTable()
         atom_nums = np.array(
@@ -387,9 +388,7 @@ class xTBPath:
         )
         single_point_energies = np.zeros(len(coords))
         for i, coord in enumerate(coords):
-            method = get_method("GFN2-xTB")
-            coord *= 1.8897259886 # convert To Bohr
-            
+            method = get_method("GFN2-xTB")            
             # Set calculator - Is this nessesary.
             if self._spin == 1 and self._charge == 0:
                 calc = xTBcalc(param=method, numbers=atom_nums, positions=coord) 
