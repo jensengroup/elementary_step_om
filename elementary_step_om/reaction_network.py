@@ -3,6 +3,7 @@ import pickle
 import numpy as np
 import copy
 import os
+from collections import defaultdict 
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -297,8 +298,9 @@ class ReactionNetwork:
         """ """
         with open(filename, 'rb') as inp:
             output_reactions = pickle.load(inp)
-
-        computed_reactions = dict()
+        
+        # if path crashed (no reaction i.e. missing hash) return None
+        computed_reactions = defaultdict(lambda : None) 
         for reaction in output_reactions:
             computed_reactions[reaction.__hash__()] = reaction
 
@@ -307,8 +309,12 @@ class ReactionNetwork:
             edge_data = self.network[node_in][node_out][reaction_hash]
             
             new_reaction = computed_reactions[reaction_hash]
-            reactant = self.network.nodes[node_in]['mapped_reactant']
+            # If reaction crashed
+            if new_reaction is None: 
+                edge_data['barrier_energy'] = np.float('nan')
+                continue
 
+            reactant = self.network.nodes[node_in]['canonical_reactant']
             reactant_E = self._mol_energy(reactant.get_fragments())
             edge_data['reaction'] = new_reaction
             edge_data['barrier_energy'] = new_reaction.ts_energy - reactant_E
@@ -341,6 +347,7 @@ class ReactionNetwork:
         return obj
 
 
+# TODO: Code below is dead.??
 class ReactionCell:
     """ """
     def __init__(self, reacting_mol=None, solvent=None, max_bonds=2,
