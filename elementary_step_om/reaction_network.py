@@ -43,13 +43,6 @@ class ReactionNetwork:
 
     def _initialize_network(self):
         """ """
-#        reaction_cell = ReactionCell(
-#            reacting_mol=self._prepare_reacting_mol(self.reagents),
-#            solvent=self.solvent,
-#            max_bonds=self._max_bonds,
-#            max_chemical_dist=self._max_cd,
-#        )
-
         mapped_reactant = self._prepare_reacting_mol(self.reagents)
         mapped_reactant.label = 'initial_reactant'
 
@@ -65,17 +58,15 @@ class ReactionNetwork:
     def _prepare_reacting_mol(self, reagents):
         """ Combine reagents and X active atoms into RDKit Mol 
         which is the reacting molecule.
-
-        TODO: move to ReactionCell
         """
         # Add Reagents
         if len(reagents) == 1:
-            reactants = reagents[0].molecule
+            reactants = reagents[0].rd_mol
         else:
-            reactants = Chem.CombineMols(reagents[0].molecule, reagents[1].molecule)
+            reactants = Chem.CombineMols(reagents[0].rd_mol, reagents[1].rd_mol)
             if len(reagents) > 2:
                 for reag in reagents[2:]:
-                    reactants = Chem.CombineMols(reactants, reag.molecule)
+                    reactants = Chem.CombineMols(reactants, reag.rd_mol)
 
         # Add active solvent molecules
         if self.solvent is not None:
@@ -119,9 +110,9 @@ class ReactionNetwork:
         new_edges = []
         new_nodes = []
         for node_name, node_data in not_run_nodes.nodes(data=True):
-            mapped_products = valid_products(node_data['mapped_reactant'].molecule, n=self._max_bonds,
+            mapped_products = valid_products(node_data['mapped_reactant'].rd_mol, n=self._max_bonds,
                                 cd=self._max_cd,
-                                charge=Chem.GetFormalCharge(node_data['mapped_reactant'].molecule),
+                                charge=Chem.GetFormalCharge(node_data['mapped_reactant'].rd_mol),
                                 n_procs=nprocs)
             
             for mapped_product in mapped_products:
@@ -375,9 +366,9 @@ class ReactionCell:
         # TODO: If we have a transition metal add the remaining non active
         # solvent molecules.
 
-        mapped_products = valid_products(self.reacting_mol.molecule, n=self._max_bonds,
+        mapped_products = valid_products(self.reacting_mol.rd_mol, n=self._max_bonds,
                                     cd=self._max_cd,
-                                    charge=Chem.GetFormalCharge(self.reacting_mol.molecule),
+                                    charge=Chem.GetFormalCharge(self.reacting_mol.rd_mol),
                                     n_procs=nprocs)
         
         #for mapped_product in products:
@@ -415,7 +406,7 @@ class ReactionCell:
         """
         """
         frags = []
-        for frag in Chem.GetMolFrags(mol.molecule, asMols=True,
+        for frag in Chem.GetMolFrags(mol.rd_mol, asMols=True,
                                      sanitizeFrags=False):
             frags.append(Fragment.from_rdkit_mol(frag))
         return frags

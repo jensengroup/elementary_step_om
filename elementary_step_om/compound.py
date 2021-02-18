@@ -35,150 +35,128 @@ def sdf2xyz(sdftxt):
     return xyz_string
 
 
+def reassign_atom_idx(mol):
+    """ Reassigns the RDKit mol atomid to atom mapped id """
+    renumber = [(atom.GetIdx(), atom.GetAtomMapNum()) for atom in mol.GetAtoms()]
+    new_idx = [idx[0] for idx in sorted(renumber, key = lambda x: x[1])]
+    return Chem.RenumberAtoms(mol, new_idx)
+
+
+class MoleculeException(Exception):
+    """ An exception that is raised by the Molecule class """
+
+
+class ReactionException(Exception):
+    """ An exception that is raised by the Reaction class """
+
+
 class Molecule:
-    """ """
+    """
+    A base class for molecules. Encapsulates an RDKit mol object.
+
+    The object is hashable by the the SMILES (should be changed to the graph hash)
+    and is therefore comparable thorugh the equality operator and in sets.
+    """
 
     def __init__(self, moltxt=None, label=None):
+        if moltxt is None:
+            raise MoleculeException("Need to provide a MolBlock")
 
         self.label = label
-
-        self.molecule = None   # This is a 2D graph
-        self.pseudo_chiral = True
+        self.rd_mol = None
+        self.atom_mapped = None
 
         self._conformers = []
 
         # Helper varibels
-        self._2d_structure = None
         self._embed_ok = None
         self._mol_hash = None
 
-    def __repr__(self):
-        return f"{self.__class__.__name__}(label={self.label})"
-    
-    # def _repr_svg_(self):
-    #     """ In Jupyter Notebooks show reacting mol """
-    #     from rdkit.Chem.Draw import rdMolDraw2D
+        self._inititalize_molecule(moltxt)
 
-    #     d2d = rdMolDraw2D.MolDraw2DSVG(200,200)
-    #     d2d.DrawMolecule(self.molecule, legend="Reacting Mol")
-    #     d2d.FinishDrawing()
-    #     return d2d.GetDrawingText()
+    def __repr__(self):
+        return f"{self.__class__.__name__}(label={self.label}, )"
 
     def __eq__(self, other):
-        """  """
         if not isinstance(other, self.__class__):
-            raise TypeError(f"Comparing {self.__class__} to {other.__class__}")
+            raise TypeError(
+                    "Comparing {self.__class__.__name__} to {other.__class__.__name__}"
+                    )
         return self._mol_hash == other._mol_hash
-        
-        #if (self.molecule.HasSubstructMatch(other.molecule, useChirality=True) and
-        #    other.molecule.HasSubstructMatch(self.molecule, useChirality=True)):
-        #    return True
-        #return False
 
     def __hash__(self):
         if self._mol_hash is None:
             m = hashlib.blake2b()
-            m.update(Chem.MolToSmiles(self.molecule).encode('utf-8'))
+            m.update(Chem.MolToSmiles(self.rd_mol).encode('utf-8'))
             self._mol_hash = int(str(int(m.hexdigest(), 16))[:32])
-        #self._mol_hash = Chem.MolToSmiles(self.molecule)
-        #if self._mol_hash is None and not self.pseudo_chiral:
-            #self._mol_hash = hash(Chem.MolToSmiles(self.molecule))
-            #self._mol_hash = make_graph_hash(self.molecule)
-        #elif self._mol_hash is None and self.pseudo_chiral:
-            #self._mol_hash = make_graph_hash(self.molecule, use_atom_maps=True)
-        
         return self._mol_hash
 
-    def set_calculator(self, calculator):
+    def _inititalize_molecule(self, moltxt):
         """ """
-        for conf in self._conformers:
-            conf.set_calculator(calculator)
-        self.calculator = calculator
-    
-    def _remove_pseudo_chirality(self):
-        """ """
-        rdmolops.AssignStereochemistry(self.molecule, cleanIt=True,
-                                       flagPossibleStereoCenters=True,
-                                       force=True)
+        self.rd_mol = Chem.MolFromMolBlock(moltxt, sanitize=False)
+        Chem.SanitizeMol(self.rd_mol)
 
-    def _remove_atom_mapping(self):
-        """ Remove atom mapping for molecule """
-        [atom.SetAtomMapNum(0) for atom in self.molecule.GetAtoms()]
+        # Is the graph atom mapped?
+        if self.rd_mol.GetAtomWithIdx(0).GetAtomMapNum() != 0:
+            self.rd_mol = reassign_atom_idx(self.rd_mol)
+            self.atom_mapped = True
+        else:
+            self.atom_mapped = False
 
-    def make_canonical(self):
-        self._remove_atom_mapping()
-        self._remove_pseudo_chirality()
-        
-        self.pseudo_chiral = False
-        return self
-
-#    def _read_moltxt(self, moltxt):
-#        """ """
-#        if not all(x in moltxt for x in ['$$$$', 'V2000']):
-#            raise TypeError('not .sdf/.mol text')
-#        elif 'V3000' in moltxt:
-#            NotImplementedError('.sdf V3000 not implemented as txt yet.')
-#
-#        self._conformers = [f'{x}$$$$' for x in moltxt.split('$$$$')][:-1]
-#
-#        first_mol = Chem.MolFromMolBlock(self._conformers[0],
-#                                         sanitize=False,
-#                                         removeHs=False)
-#
-#        if not reactionsfirst_mol.GetConformer().Is3D():  # if 1D of 2D
-#            self.molecule = first_mol
-#            self._2d_structure = True
-#        else:  # if 3D create 2D coords
-#            AllChem.Compute2DCoords(first_mol)
-#            self.molecule = first_mol
-#
-#        if self.label is None:
-#            self.label = self._conformers[0].split('\n')[0]
+        # Does it have a 3D conformer?
+        if all(self.rd_mol.GetConformer().GetPositions()[:,2] == 0.):
+            self.rd_mol.RemoveAllConformers()
+        else:
+            raise NotImplementedError("MolBlock is not 2D")
 
     @classmethod
-    def from_molfile(cls, file):
+    def from_molfile(cls, file, label=None):
         """
-        Reads Molfile
+        Initialize Molecule from a Molfile
         """
         if not file.endswith(('mol', 'sdf')):
             raise TypeError('Only works with mol/sdf files')
-
-        obj = cls(moltxt=None, label=file.split('.')[0])
+        
+        # Find the Molecule label
+        if label is not None:
+            label_ = label
+        else:
+            label_ = file.split('.')[0]
 
         suppl = rdmolfiles.SDMolSupplier(file, removeHs=False, sanitize=False)
-
         first_mol = next(suppl)
-        if not first_mol.GetConformer().Is3D():  # if 1D or 2D
-            obj.molecule = first_mol
-            obj._2d_structure = True
+        if not first_mol.GetConformer().Is3D():  # if 2D
+            obj = cls(moltxt=Chem.MolToMolBlock(first_mol), label=label_)
             return obj
 
-        AllChem.Compute2DCoords(first_mol)
-        obj.molecule = first_mol
-        for conf_idx in range(len(suppl)):
-            obj._conformers.append(
-                Conformer(sdf=suppl.GetItemText(conf_idx), 
-                          label=f"{file.split('.')[0]}-{conf_idx}")
-            )
-        obj._2d_structure = False
-        return obj
+        else:
+            raise NotImplementedError("If MolFile is 3D")
+
+        # AllChem.Compute2DCoords(first_mol)
+        # obj.molecule = first_mol
+        # for conf_idx in range(len(suppl)):
+        #     obj._conformers.append(
+        #         Conformer(sdf=suppl.GetItemText(conf_idx), 
+        #                   label=f"{file.split('.')[0]}-{conf_idx}")
+        #     )
+        # obj._2d_structure = False
+        # return obj
 
     @classmethod
     def from_rdkit_mol(cls, rdkit_mol, label='molecule'):
-        """ """
-        obj = cls(label=label)
-        obj.molecule = copy.deepcopy(rdkit_mol)
+        """ Initialize Molecule from a RDKit mol object. """
 
         if len(rdkit_mol.GetConformers()) == 0:  # If no 3D conformers.
-            return obj
-
+            return cls(moltxt=Chem.MolToMolBlock(rdkit_mol), label=label)
+        else:
+            raise NotImplementedError("RDKit have a Conformer.")
         # If rdkit mol has 3D confs, add confs to obj.
-        if rdkit_mol.GetConformer().Is3D():
-            for conf in rdkit_mol.GetConformers():
-                mol_block = Chem.MolToMolBlock(rdkit_mol, condId=conf.Getid())
-                obj._conformers.append(mol_block)
+        #if rdkit_mol.GetConformer().Is3D():
+        #    for conf in rdkit_mol.GetConformers():
+        #        mol_block = Chem.MolToMolBlock(rdkit_mol, condId=conf.Getid())
+        #        obj._conformers.append(mol_block)
         
-        return obj
+        #return obj
 
     @staticmethod
     def _dative2covalent(inp_mol):
@@ -193,50 +171,50 @@ class Molecule:
                 bond.SetBondType(Chem.rdchem.BondType.SINGLE)
         mol.UpdatePropertyCache(strict=False)
         return mol
+
+
+    def set_calculator(self, calculator):
+        """ """
+        for conf in self._conformers:
+            conf.set_calculator(calculator)
+        self.calculator = calculator
+    
+    def _remove_pseudo_chirality(self):
+        """ """
+        rdmolops.AssignStereochemistry(self.rd_mol, cleanIt=True,
+                                       flagPossibleStereoCenters=True,
+                                       force=True)
+
+    def _remove_atom_mapping(self):
+        """ Remove atom mapping for molecule """
+        [atom.SetAtomMapNum(0) for atom in self.rd_mol.GetAtoms()]
+
+    def make_canonical(self):
+        """ Remove both atom mapping and reassign the sterochemistry."""
+        self._remove_atom_mapping()
+        self._remove_pseudo_chirality()
+        self.atom_mapped = False
+        return self
     
     def get_fragments(self):
         """ """
         fragments = []
-        for frag in Chem.GetMolFrags(self.molecule, asMols=True, sanitizeFrags=False):
+        for frag in Chem.GetMolFrags(self.rd_mol, asMols=True, sanitizeFrags=False):
             fragments.append(Fragment.from_rdkit_mol(frag))
         return fragments
 
-    def _embed_fragment(self, frag_rdkit, nconfs=20, uffSteps=5_000, seed=20):
+
+class Solvent:
+    """ 
+    Base class that represents a solvent.
+    """
+    def __init__(self, smiles=None, n_solvent=0, active=0):
         """ """
-        p = AllChem.ETKDGv3()
-        p.useRandomCoords = True
-        p.randomSeed=seed
-        try:  # Can the fragment actually be embedded?
-            AllChem.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
-        except RuntimeError:
-            print(f"RDKit Failed to embed: {self.label}.")
-            return None, False
+        self._smiles = smiles
+        self._n_solvent_molecules = n_solvent
+        self._nactive = active
+        self.label = 'solvent'
 
-        tmp_frag_mol = copy.deepcopy(frag_rdkit)
-        confid = AllChem.EmbedMolecule(tmp_frag_mol, params=p)
-        conformers = []
-        if confid >= 0:  # if RDKit can't embed confid = -1
-            tmp_frag_conf = tmp_frag_mol.GetConformer()
-            embed_ok = True
-            for conf_idx, embed_conf in enumerate(frag_rdkit.GetConformers()):
-                # Run OpenBabel UFF min.
-                mol_block = Chem.MolToMolBlock(frag_rdkit, confId=embed_conf.GetId())
-                obmol = pybel.readstring('sdf', mol_block)
-                obmol.localopt(forcefield='uff', steps=uffSteps)
-
-                # Update tmp mol conformer with UFF coords.
-                for i, atom in enumerate(obmol):
-                    x, y, z = atom.coords
-                    tmp_frag_conf.SetAtomPosition(i, Point3D(x, y, z))
-
-                conf_name = f"{self.label}_c{conf_idx}"
-                conf = Conformer(Chem.MolToMolBlock(tmp_frag_mol), label=conf_name)
-                conformers.append(conf)
-        else:
-            print(f"openbabel failed to UFF optimize: {self.label}.")
-            embed_ok = False
-
-        return conformers, embed_ok
 
 class Conformer:
     """ """
@@ -381,65 +359,40 @@ class Conformer:
                 self._converged = False
 
 
-class Solvent(Molecule):
-    """ """
-    def __init__(self, smiles=None, n_solvent=0, active=0):
-        """ """
-        self._smiles = smiles
-        self._n_solvent_molecules = n_solvent
-        self._nactive = active
-        self.label = 'solvent'
-
-
 class Fragment(Molecule):
-    """ Fragment class - removes label chiraity and atom map numbers"""
-
+    """ 
+    The Fragment class is a special `Molecule` with only one Fragment. 
+    """
     def __init__(self, **kwds):
         super().__init__(**kwds)
+        
         self.pseudo_chiral = False 
 
-    #    if self.molecule is not None:
-    #        self._reset_label_chirality()
+    # @classmethod
+    # def from_rdkit_mol(cls, rdkit_mol):
+    #     """ """
+    #     try:
+    #         label = rdkit_mol.GetProp('_Name')
+    #     except KeyError:
+    #         label = None
 
-    #def _reset_label_chirality(self):
-    #    """ Reset psudo R/S label chirality for fragments """
-    #    patt = Chem.MolFromSmarts('[C^3;H2,H3]')
-    #    atom_matches = self.molecule.GetSubstructMatches(patt)
-    #
-    #    if atom_matches is not None:
-    #        for atom_idx in atom_matches:
-    #            self.molecule.GetAtomWithIdx(atom_idx[0]).SetChiralTag(
-    #                                         rdchem.ChiralType.CHI_UNSPECIFIED)
+    #     obj = cls(label=label)
+    #     obj.molecule = rdkit_mol
 
-    @classmethod
-    def from_rdkit_mol(cls, rdkit_mol):
-        """ """
-        try:
-            label = rdkit_mol.GetProp('_Name')
-        except KeyError:
-            label = None
+    #     if len(rdkit_mol.GetConformers()) == 0:  # If no 3D conformers.
+    #         return obj
 
-        obj = cls(label=label)
-        obj.molecule = rdkit_mol
+    #     # If rdkit mol has 3D confs, add confs to obj.
+    #     if rdkit_mol.GetConformer().Is3D():
+    #         for conf in rdkit_mol.GetConformers():
+    #             mol_block = Chem.MolToMolBlock(rdkit_mol, condId=conf.Getid())
+    #             obj._conformers.append(mol_block)
 
-        # Reset atom map num and label chirality
-        #[atom.SetAtomMapNum(0) for atom in obj.molecule.GetAtoms()]
-        #obj._reset_label_chirality()
-
-        if len(rdkit_mol.GetConformers()) == 0:  # If no 3D conformers.
-            return obj
-
-        # If rdkit mol has 3D confs, add confs to obj.
-        if rdkit_mol.GetConformer().Is3D():
-            for conf in rdkit_mol.GetConformers():
-                mol_block = Chem.MolToMolBlock(rdkit_mol, condId=conf.Getid())
-                obj._conformers.append(mol_block)
-
-        return obj
+    #     return obj
 
     def num_rotatable_bond(self):
         """ Calculates the number of rotatable bonds in the fragment """
-        if self.molecule is None:
+        if self.rd_mol is None:
             raise RuntimeError("Fragment has no RDKit mol")
 
         rot_bonds_smarts = [
@@ -449,11 +402,11 @@ class Fragment(Molecule):
                 ]
 
         # TODO Sanitizing Molecule should be done elsewhere. 
-        Chem.SanitizeMol(self.molecule)
+        Chem.SanitizeMol(self.rd_mol)
         num_dihedral = 0
         for bond_smart in rot_bonds_smarts:
             dihedral_template = Chem.MolFromSmarts(bond_smart)
-            dihedrals = self.molecule.GetSubstructMatches(dihedral_template)
+            dihedrals = self.rd_mol.GetSubstructMatches(dihedral_template)
             num_dihedral += len(dihedrals)
 
         return num_dihedral
@@ -466,11 +419,48 @@ class Fragment(Molecule):
         
         openbabel dependency might be eliminated at a later stage.
         """
-        rdkit_mol = self._dative2covalent(self.molecule)  # copy of rdkit_mol with covalent bonds broken
+        rdkit_mol = self._dative2covalent(self.rd_mol)
 
         self._conformers, self._embed_ok = self._embed_fragment(rdkit_mol, nconfs=nconfs, uffSteps=uffSteps, seed=seed)
         if self._embed_ok is not True:
             self._conformers = []
+
+    def _embed_fragment(self, frag_rdkit, nconfs=20, uffSteps=5_000, seed=20):
+        """ """
+        p = AllChem.ETKDGv3()
+        p.useRandomCoords = True
+        p.randomSeed=seed
+        try:  # Can the fragment actually be embedded?
+            AllChem.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
+        except RuntimeError:
+            print(f"RDKit Failed to embed: {self.label}.")
+            return None, False
+
+        tmp_frag_mol = copy.deepcopy(frag_rdkit)
+        confid = AllChem.EmbedMolecule(tmp_frag_mol, params=p)
+        conformers = []
+        if confid >= 0:  # if RDKit can't embed confid = -1
+            tmp_frag_conf = tmp_frag_mol.GetConformer()
+            embed_ok = True
+            for conf_idx, embed_conf in enumerate(frag_rdkit.GetConformers()):
+                # Run OpenBabel UFF min.
+                mol_block = Chem.MolToMolBlock(frag_rdkit, confId=embed_conf.GetId())
+                obmol = pybel.readstring('sdf', mol_block)
+                obmol.localopt(forcefield='uff', steps=uffSteps)
+
+                # Update tmp mol conformer with UFF coords.
+                for i, atom in enumerate(obmol):
+                    x, y, z = atom.coords
+                    tmp_frag_conf.SetAtomPosition(i, Point3D(x, y, z))
+
+                conf_name = f"{self.label}_c{conf_idx}"
+                conf = Conformer(Chem.MolToMolBlock(tmp_frag_mol), label=conf_name)
+                conformers.append(conf)
+        else:
+            print(f"openbabel failed to UFF optimize: {self.label}.")
+            embed_ok = False
+
+        return conformers, embed_ok
 
     def relax_conformers(self, nprocs=4):
         """ """
