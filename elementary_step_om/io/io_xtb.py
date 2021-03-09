@@ -1,24 +1,21 @@
+import numpy as np
 
-def read_xtb_out(content, quantity='energy'):
+def read_xtb_out(content, property: str = 'energy' ):
     """Reads gaussian output file
 
     - quantity = 'structure' - final structure form output.
-    - quantity = 'atomic_numbers' - atmoic numbers
     - quantity = 'energy' - final energy from output.
+
+    Works with xTB version 6.1.
     """
-
-    if quantity == 'structure':
+    if property == 'structure':
         return read_structure(content)
-
-    elif quantity == 'atomic_symbols':
-        return read_atomic_symbols(content)
-
-    elif quantity == 'energy':
+    elif property == 'energy':
         return read_energy(content)
-
-    elif quantity == 'converged':
+    elif property == 'converged':
         return read_converged(content)
-
+    else:
+        raise NotImplementedError(f"Reader for {property} not implemented.")
 
 def read_converged(content):
     """Check if program terminated normally"""
@@ -48,13 +45,18 @@ def read_energy(content):
 
 
 def read_structure(content):
-    """Read structure from output file """
-    
-    structure_block = content.split('final structure:')[1]
+    """
+    Read structure from output file 
+    Works with xTB v. 6.1.
+    """
+    try:
+        structure_block = content.split('final structure:')[1]
+    except:
+        return None
 
     atom_positions = []
-    for line in structure_block.split('\n')[4:]:
-        if len(line) == 0: # empty lines ends structure block
+    for line in structure_block.split('\n')[3:]:
+        if line == "$end": 
             break
 
         line = line.strip().split()
@@ -62,31 +64,10 @@ def read_structure(content):
             raise RuntimeError('Length of line does not match structure!')
         
         try:
-            atom_position = list(map(float, line[1:]))
+            atom_position = list(map(float, line[:3]))
             atom_positions.append(atom_position)
         except ValueError:
             raise ValueError('Expected a line with one string and three floats.')
-
-    return atom_positions
-
-def read_atomic_symbols(content):
-    """Read stmbols from output file """
     
-    structure_block = content.split('final structure:')[1]
+    return np.asarray(atom_positions, dtype=float) * 0.529177249 # 6.1.3 is in bohr. :(
 
-    atom_symbols = []
-    for line in structure_block.split('\n')[4:]:
-        if len(line) == 0: # empty lines ends structure block
-            break
-
-        line = line.strip().split()
-        if len(line) != 4:
-            raise RuntimeError('Length of line does not match structure!')
-        
-        try:
-            atom_symbol = str(line[0])
-            atom_symbols.append(atom_symbol)
-        except ValueError:
-            raise ValueError('Expected a line with one string and three floats.')
-
-    return atom_symbols

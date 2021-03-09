@@ -11,9 +11,9 @@ from tqdm import tqdm
 
 from rdkit import Chem
 
-sys.path.append('/home/koerstz/github/elementary_step_om')
-from elementary_step_om import Fragment
-from elementary_step_om.external_cmd import xTB
+sys.path.append(sys.path[0].rsplit('/', 1)[0])
+from elementary_step_om.chem import Fragment
+from elementary_step_om.xtb_calculations import xTBCalculator
 
 if __name__ == '__main__':
     
@@ -30,18 +30,17 @@ if __name__ == '__main__':
     for fragment in tqdm(fragments):
         # 1)
         fragment.label = f"hey-{n}"
-        fragment.make_conformers_rdkit(nconfs=2) 
+        fragment.make_fragment_conformers(nconfs=2) 
         
         # 2)
-        formal_charge = Chem.GetFormalCharge(fragment.molecule)
-        args = xtb_args={'opt': 'loose', 
-                         'alpb': 'water',
-                         'chrg': str(formal_charge)} 
-        fragment.set_calculator(xTB(xtb_args=args)) 
-        
+        formal_charge = Chem.GetFormalCharge(fragment.rd_mol)
+        xtb_calc = xTBCalculator(
+            xtb_kwds="--opt loose", charge=formal_charge, spin=1, properties=['energy', 'structure']
+        )
+        fragment.calculator = xtb_calc
+
         # 3)
-        fragment.relax_conformers(nprocs=ncpus)
-        n += 1
+        fragment.run_calculations()
 
     # Save fragments with updated conformers, and corresponding energy.
     with open(sys.argv[1].split('.')[0] + '_output.pkl', "wb") as frag_output:

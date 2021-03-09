@@ -102,18 +102,14 @@ def set_chirality(product, reactant):
     product atoms with unchanged neighbors to the same label chirality as
     the reactant """
 
-    # TODO move these somewhere it makes more sense.
     product = reassign_atom_idx(product)
     reactant = reassign_atom_idx(reactant)
-
-    Chem.SanitizeMol(product)
-    Chem.SanitizeMol(reactant)
 
     # Find chiral atoms - including label chirality
     chiral_atoms_product = Chem.FindMolChiralCenters(product, includeUnassigned=True)
 
     unchanged_atoms = []
-    for atom, chiral_tag in chiral_atoms_product:
+    for atom, _ in chiral_atoms_product:
         product_neighbors = [a.GetIdx() for a in product.GetAtomWithIdx(atom).GetNeighbors()]
         reactant_neighbors = [a.GetIdx() for a in reactant.GetAtomWithIdx(atom).GetNeighbors()]
         
@@ -122,8 +118,9 @@ def set_chirality(product, reactant):
 
     # make combinations of isomers.
     opts = StereoEnumerationOptions(onlyUnassigned=False, unique=False)
-    rdmolops.AssignStereochemistry(product, cleanIt=True,
-                                   flagPossibleStereoCenters=True, force=True)
+    rdmolops.AssignStereochemistry(
+        product, cleanIt=True, flagPossibleStereoCenters=True, force=True
+    )
 
     product_isomers = []
     product_isomers_mols = []
@@ -137,6 +134,7 @@ def set_chirality(product, reactant):
             if reactant_global_tag != product_isomer_global_tag:
                 product_isomer.GetAtomWithIdx(atom).InvertChirality()
 
+        # TODO: This is using SMILES.
         if Chem.MolToSmiles(product_isomer) not in product_isomers:
             product_isomers.append(Chem.MolToSmiles(product_isomer))
             product_isomers_mols.append(product_isomer)
@@ -155,7 +153,6 @@ def conversion_matrix_to_mol(prod_ac_matrix , atomic_num, charge):
     mol = AC2mol(proto_mol, prod_ac_matrix, atomic_num, charge,
                  allow_charged_fragments=True, use_graph=True,
                  use_atom_maps=True)
-    Chem.Kekulize(mol, clearAromaticFlags=True)
 
     if int(Chem.GetFormalCharge(mol)) != charge:
         return None
@@ -196,8 +193,9 @@ def valid_products(reactant, n=2, cd=4, charge=0, n_procs=1):
     comb_to_check = [c for c in prod(range(n+1), repeat=2)
                      if sum(c) <= cd and max(c) <= n]
 
-    conv_to_mol = partial(conversion_matrix_to_mol,
-                          atomic_num=atomic_num, charge=charge)
+    conv_to_mol = partial(
+        conversion_matrix_to_mol, atomic_num=atomic_num, charge=charge
+    )
 
     # TODO: make more mem efficient. Right now it's not ideal
     # all valid prod AC matrices are stored.

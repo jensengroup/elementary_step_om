@@ -1,0 +1,642 @@
+import shutil
+import re
+import copy
+import itertools
+import multiprocessing as mp
+import numpy as np
+
+from rdkit.Geometry import Point3D
+from rdkit import Chem
+from rdkit.Chem import rdmolfiles, AllChem, rdmolops
+from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers
+from rdkit.Chem.EnumerateStereoisomers import StereoEnumerationOptions
+
+from openbabel import pybel
+import hashlib
+
+def reassign_atom_idx(mol):
+    """ Reassigns the RDKit mol object atomid to atom mapped id """
+    renumber = [(atom.GetIdx(), atom.GetAtomMapNum()) for atom in mol.GetAtoms()]
+    new_idx = [idx[0] for idx in sorted(renumber, key=lambda x: x[1])]
+    mol = Chem.RenumberAtoms(mol, new_idx)
+    rdmolops.AssignStereochemistry(mol, force=True)
+    return mol
+
+
+class MoleculeException(Exception):
+    """ An exception that is raised by the Molecule class """
+
+
+class ReactionException(Exception):
+    """ An exception that is raised by the Reaction class """
+
+
+class BaseMolecule:
+    """
+    A base class for molecules. Encapsulates an RDKit mol object.
+
+    The object is hashable by the the SMILES (should be changed to the graph hash)
+    and is therefore comparable thorugh the equality operator and in sets.
+    """
+
+    def __init__(self, molblock: str = None, label: str = None):
+        if molblock is None:
+            raise MoleculeException("Need to provide a MolBlock")
+
+        self.label = label
+        self.rd_mol = None
+        self.conformers = []
+        self._calculator = None
+
+        self.results = {}
+        self._mol_hash = None
+
+        self._inititalize_molecule(molblock)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(label={self.label})"
+
+    def __eq__(self, other):
+        if not type(self) is type(other):
+            raise TypeError(
+                f"Comparing {self.__class__.__name__} to {other.__class__.__name__}"
+            )
+        return self.__hash__() == other.__hash__()
+
+    def __hash__(self) -> int:
+        if self._mol_hash is None:
+            m = hashlib.blake2b()
+            m.update(Chem.MolToSmiles(self.rd_mol).encode("utf-8"))
+            self._mol_hash = int(str(int(m.hexdigest(), 16))[:32])
+        return self._mol_hash
+
+    def _inititalize_molecule(self, molblock):
+        """ """
+        self.rd_mol = Chem.MolFromMolBlock(molblock, sanitize=False)
+        Chem.SanitizeMol(self.rd_mol)
+
+        # Does it have a 3D conformer?
+        if all(self.rd_mol.GetConformer().GetPositions()[:, 2] == 0.0):
+            self.rd_mol.RemoveAllConformers()
+        else:
+            self.conformers.append(
+                Conformer(molblock=molblock, label=self.label + "_init")
+            )
+            self.rd_mol.RemoveAllConformers()
+            AllChem.Compute2DCoords(self.rd_mol)
+
+    @property
+    def molblock(self) -> str:
+        """ molblock are the MolBlock from self.rd_mol"""
+        return Chem.MolToMolBlock(self.rd_mol)
+
+    @property
+    def calculator(self):
+        return self._calculator
+
+    @calculator.setter
+    def calculator(self, calc_instance):
+        for conf in self.conformers:
+            conf.calculator = calc_instance
+
+    @classmethod
+    def from_molfile(cls, file, label=None):
+        """
+        Initialize Molecule from a Molfile
+        """
+        if not file.endswith(("mol", "sdf")):
+            raise TypeError("Only works with mol/sdf files")
+
+        # Find the Molecule label
+        if label is None:
+            label = file.split(".")[0]
+
+        suppl = rdmolfiles.SDMolSupplier(file, removeHs=False, sanitize=False)
+        first_mol = next(suppl)
+        obj = cls(molblock=Chem.MolToMolBlock(first_mol), label=label)
+        return obj
+
+        # AllChem.Compute2DCoords(first_mol)
+        # obj.molecule = first_mol
+        # for conf_idx in range(len(suppl)):
+        #     obj._conformers.append(
+        #         Conformer(sdf=suppl.GetItemText(conf_idx),
+        #                   label=f"{file.split('.')[0]}-{conf_idx}")
+        #     )
+        # obj._2d_structure = False
+        # return obj
+
+    @classmethod
+    def from_rdkit_mol(cls, rdkit_mol, label="molecule"):
+        """ Initialize Molecule from a RDKit mol object. """
+
+        n_confs = rdkit_mol.GetConformers()
+        if len(n_confs) <= 1:  # If no 3D conformers.
+            return cls(molblock=Chem.MolToMolBlock(rdkit_mol), label=label)
+        else:
+            raise NotImplementedError("RDKit have more than 1 Conformer.")
+
+    def _remove_pseudo_chirality(self) -> None:
+        """ Reassign stereochemistry for the RDKit mol object """
+        rdmolops.AssignStereochemistry(
+            self.rd_mol, cleanIt=True, flagPossibleStereoCenters=True, force=True
+        )
+
+    def _remove_atom_mapping(self) -> None:
+        """ Remove atom mapping from RDKit mol object """
+        [atom.SetAtomMapNum(0) for atom in self.rd_mol.GetAtoms()]
+
+    def has_atom_mapping(self) -> None:
+        """ Determines is the molecule has atom mappings """
+        for atom in self.rd_mol.GetAtoms():
+            if atom.GetAtomMapNum() > 0:
+                return True
+        return False
+
+    def get_fragments(self):
+        """ Split molecule into fragments """
+        fragments = []
+        for frag in Chem.GetMolFrags(self.rd_mol, asMols=True, sanitizeFrags=False):
+            fragments.append(Fragment.from_rdkit_mol(frag))
+        return fragments
+
+    def num_rotatable_bond(self):
+        """ Calculates the number of rotatable bonds in the fragment """
+        if self.rd_mol is None:
+            raise RuntimeError("Fragment has no RDKit mol")
+
+        rot_bonds_smarts = [
+            "[!#1]~[!$(*#*)&!D1]-!@[!$(*#*)&!D1]~[!#1]",
+            "[*]~[*]-[O,S]-[#1]",
+            "[*]~[*]-[NX3;H2]-[#1]",
+        ]
+
+        num_dihedral = 0
+        for bond_smart in rot_bonds_smarts:
+            dihedral_template = Chem.MolFromSmarts(bond_smart)
+            dihedrals = self.rd_mol.GetSubstructMatches(dihedral_template)
+            num_dihedral += len(dihedrals)
+
+        return num_dihedral
+
+    def run_calculations(self, parallel_confs: int = 1) -> None:
+        """
+        Run the calculation defined by the calculator object on
+        all conformers.
+        """
+        with mp.Pool(int(parallel_confs)) as pool:
+            updated_confs = pool.map(self._calculation_worker, self.conformers)
+        self.conformers = updated_confs
+
+    def _calculation_worker(self, conf):
+        conf.run_calculation()
+        return conf
+
+    def embed_molecule(
+        self,
+        confs_pr_frag: int = 1,
+        refine_calculator=None,
+        overwrite: bool = True,
+        direction: list = [0.8, 0, 0],
+    ) -> None:
+        """
+        If more than one fragment, the fragments are embedded individually
+        and then merged afterwards.
+        """
+
+        def merge_fragments(frag_confs, conf_num: int) -> Conformer:
+            """ """
+            nfrags = len(frag_confs)
+            if nfrags == 0:
+                merged_conformer = frag_confs[0]
+            else:
+                merged_conformer = Chem.MolFromMolBlock(
+                    frag_confs[0].molblock, sanitize=False
+                )
+                for frag_conf in frag_confs[1:]:
+                    frag_natoms = len(frag_conf.atom_symbols)
+                    new_coords = (
+                        frag_conf.coordinates
+                        + np.array(direction) * nfrags * frag_natoms
+                    )
+                    frag_conf.coordinates = new_coords
+
+                    frag_conf = Chem.MolFromMolBlock(frag_conf.molblock, sanitize=False)
+                    merged_conformer = Chem.CombineMols(merged_conformer, frag_conf)
+
+            merged_conformer = reassign_atom_idx(merged_conformer)
+            merged_conformer = Conformer(
+                molblock=Chem.MolToMolBlock(merged_conformer),
+                label=self.label + f"_c{conf_num}",
+            )
+
+            if refine_calculator is not None:
+                merged_conformer.calculator = refine_calculator
+                merged_conformer.run_calculation()
+
+            return merged_conformer
+
+        if overwrite:
+            self.conformers = []
+
+        fragments = self.get_fragments()
+        fragment_confs = []
+        for frag in fragments:
+            frag.make_fragment_conformers(nconfs=confs_pr_frag)
+            fragment_confs.append(frag.conformers)
+
+        for conf_num, frag_confs_set in enumerate(itertools.product(*fragment_confs)):
+            self.conformers.append(merge_fragments(frag_confs_set, conf_num))
+
+
+class Molecule(BaseMolecule):
+    """ """
+
+    def __init__(self, molblock: str = None, label: str = None) -> None:
+        """ """
+        super().__init__(molblock=molblock, label=label)
+
+        # Is the graph mapped?
+        if self.has_atom_mapping():
+            self.unmap_molecule()
+
+    def unmap_molecule(self):
+        """ Remove both atom mapping and reassign the sterochemistry."""
+        self._remove_atom_mapping()
+        self._remove_pseudo_chirality()
+
+    def get_mapped_molecule(self, label: str = None):
+        """
+        Assign atom mapping as atom idx + 1 and assign random pseudochirality
+        returns a MappedMolecule.
+        """
+        tmp_rdmol = copy.deepcopy(self.rd_mol)
+        [atom.SetAtomMapNum(atom.GetIdx() + 1) for atom in tmp_rdmol.GetAtoms()]
+        rdmolops.AssignStereochemistry(
+            tmp_rdmol, cleanIt=True, flagPossibleStereoCenters=True, force=True
+        )
+
+        opts = StereoEnumerationOptions(onlyUnassigned=False, unique=False)
+        tmp_rdmol = next(EnumerateStereoisomers(tmp_rdmol, options=opts))
+        tmp_rdmol = Chem.MolFromMolBlock(Chem.MolToMolBlock(tmp_rdmol), sanitize=False)
+
+        if label is None:
+            label = self.label + "_mapped"
+
+        return MappedMolecule(molblock=Chem.MolToMolBlock(tmp_rdmol), label=label)
+
+
+class MappedMolecule(BaseMolecule):
+    """ """
+    def __init__(self, molblock=None, label=None):
+        super().__init__(molblock=molblock, label=label)
+
+        # Is the graph mapped?
+        if self.has_atom_mapping():
+            self.rd_mol = reassign_atom_idx(self.rd_mol)
+        else:
+            raise MoleculeException("Atoms in MolBlock are not mapped")
+
+    def get_unmapped_molecule(self, label: str = None) -> Molecule:
+        """
+        Remove atom mapping and reassign the sterochemistry.
+        Return Unmapped Molecule
+        """
+        tmp_mol = copy.deepcopy(self)
+        tmp_mol._remove_atom_mapping()
+        tmp_mol._remove_pseudo_chirality()
+
+        if label is None:
+            label = tmp_mol.label + "_unmapped"
+
+        return Molecule(molblock=Chem.MolToMolBlock(tmp_mol.rd_mol), label=label)
+
+
+class Solvent:
+    """
+    Base class that represents a solvent.
+    """
+
+    def __init__(self, smiles=None, n_solvent=0, active=0):
+        """ """
+        self._smiles = smiles
+        self._n_solvent_molecules = n_solvent
+        self._nactive = active
+        self.label = "solvent"
+
+
+class Fragment(BaseMolecule):
+    """
+    The Fragment class is a special `Molecule` with only one Fragment.
+    Doesn't alter the atom mapping.
+    """
+
+    # TODO: This doesn't perform an UFF minimization. This is a problem when dealing
+    # with organometalics.
+    def _embed_fragment(self, frag_rdkit, nconfs=20, uffSteps=5_000, seed=20):
+        """ """
+        p = AllChem.ETKDGv3()
+        p.useRandomCoords = True
+        p.randomSeed = seed
+
+        try:  # Can the fragment actually be embedded?
+            AllChem.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
+        except RuntimeError:
+            print(f"RDKit Failed to embed: {self.label}.")
+            return []
+
+        # # Worst code ever...
+        # smarts = Chem.MolToSmarts(frag_rdkit)
+        # for patt in ["\d", ""]:
+        #     smarts = re.sub(f":\d{patt}", '', smarts)
+        # smarts_ob = pybel.Smarts(smarts)
+        # ##
+        for conf_idx in range(frag_rdkit.GetNumConformers()):
+            conf_molblock = Chem.MolToMolBlock(frag_rdkit, confId=conf_idx)
+            conf_name = f"{self.label}_c{conf_idx}"
+            conf = Conformer(molblock=conf_molblock, label=conf_name)
+
+            # coords = np.zeros((frag_rdkit.GetNumAtoms(), 3))
+            # obmol = pybel.readstring('mdl', conf.molblock)
+            # obmol.localopt(forcefield='uff', steps=uffSteps) # This makes it not work
+            # smarts_ob.findall(obmol) # how to i get the atom mapping to work correct??
+            # for i, atom in enumerate(obmol):
+            #    coords[i] = atom.coords
+
+            # conf.coordinates = coords
+            self.conformers.append(conf)
+
+    @staticmethod  # Does it need to be static??
+    def _dative2covalent(inp_mol):
+        """
+        This doesn't change the atom order
+        can be speed op by only looping over dative bonds.
+        """
+        # TODO this i wrong for Metals. See Jan messeage on Slack!
+        mol = copy.deepcopy(inp_mol)
+        for bond in mol.GetBonds():
+            if bond.GetBondType() is Chem.rdchem.BondType.DATIVE:
+                beginAtom = bond.GetBeginAtom().SetFormalCharge(0)
+                bond.SetBondType(Chem.rdchem.BondType.SINGLE)
+        mol.UpdatePropertyCache(strict=False)
+        return mol
+
+    def make_fragment_conformers(
+        self,
+        nconfs: int = 20,
+        uffSteps: int = 5_000,
+        seed: int = 20,
+        overwrite: bool = True,
+    ) -> None:
+        """
+        Makes conformers by embedding conformers using RDKit and
+        refine with openbabel UFF. If molecule is more then one fragment
+        they are moved X*n_atoms awat from each other.
+
+        openbabel dependency might be eliminated at a later stage.
+
+        overwrite = True - remove old conformers
+        """
+        if overwrite:
+            self.conformers = []
+
+        rdkit_mol = self._dative2covalent(self.rd_mol)
+        self._embed_fragment(rdkit_mol, nconfs=nconfs, uffSteps=uffSteps, seed=seed)
+
+
+class Conformer:
+    """ """
+
+    def __init__(self, molblock=None, label=None):
+        """ """
+        self.label = label
+        self._molblock = molblock
+        self.results = None
+        self._calculator = None
+
+        self._set_atom_symbols()
+        self._set_init_connectivity()
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(label={self.label})"
+
+    @property
+    def molblock(self):
+        return self._molblock
+
+    @property
+    def coordinates(self):
+        natoms = len(self.atom_symbols)
+        info = self._molblock.split("\n")[4 : 4 + natoms]
+        coords = np.array([coord.split()[:3] for coord in info], dtype=float)
+        return coords
+
+    @coordinates.setter
+    def coordinates(self, new_coords):
+        self._update_molblock_coords(new_coords)
+
+    @property
+    def calculator(self):
+        return self._calculator
+
+    @calculator.setter
+    def calculator(self, calc_instance):
+        """ """
+        calc = copy.deepcopy(calc_instance)
+        self._calculator = calc
+
+    def _set_init_connectivity(self):
+        """ """
+        # for organometalics consider removing metal.
+        # perhaps move to fragment.
+
+        sdf = self._molblock.split("\n")
+        del sdf[:3]  # del header
+
+        info_line = sdf[0].strip().split()
+        natoms = int(info_line[0])
+        nbonds = int(info_line[1])
+        del sdf[: natoms + 1]  # del coord block
+
+        connectivity = np.zeros((natoms, natoms), dtype=np.int8)
+        for line_idx in range(nbonds):
+            i, j = sdf[line_idx].split()[:2]
+            connectivity[int(i) - 1, int(j) - 1] = 1
+            connectivity[int(j) - 1, int(i) - 1] = 1
+
+        self._init_connectivity = connectivity
+
+    def _set_atom_symbols(self):
+        """ """
+        # for organometalics consider removing metal.
+        # perhaps move to fragment.
+
+        sdf = self._molblock.split("\n")
+        del sdf[:3]  # del header
+
+        info_line = sdf[0].strip().split()
+        natoms = int(info_line[0])
+        del sdf[0]
+
+        atom_symbols = []
+        for line_idx in range(natoms):
+            atom_symbols.append(sdf[line_idx].split()[3])
+
+        self.atom_symbols = atom_symbols
+
+    def _check_connectivity(self, new_coords, covalent_factor=1.3):
+        """ check that the updated structure is ok"""
+        pt = Chem.GetPeriodicTable()
+        new_coords = np.asarray(new_coords, dtype=np.float32)
+        new_ac = np.zeros(self._init_connectivity.shape, dtype=np.int8)
+        for i in range(new_coords.shape[0]):
+            for j in range(new_coords.shape[0]):
+                if i > j:
+                    atom_num_i = pt.GetAtomicNumber(self.atom_symbols[i])
+                    atom_num_j = pt.GetAtomicNumber(self.atom_symbols[j])
+
+                    Rcov_i = pt.GetRcovalent(atom_num_i) * covalent_factor
+                    Rcov_j = pt.GetRcovalent(atom_num_j) * covalent_factor
+
+                    dist = np.linalg.norm(new_coords[i] - new_coords[j])
+                    if dist < Rcov_i + Rcov_j:
+                        new_ac[i, j] = new_ac[j, i] = 1
+
+        if np.array_equal(new_ac, self._init_connectivity):
+            return True
+        return False
+
+    def _update_molblock_coords(self, new_coords):
+        """ """
+        tmp_mol = Chem.MolFromMolBlock(self.molblock, sanitize=False)
+        conf = tmp_mol.GetConformer()
+        for i in range(tmp_mol.GetNumAtoms()):
+            x, y, z = new_coords[i]
+            conf.SetAtomPosition(i, Point3D(x, y, z))
+
+        self._molblock = Chem.MolToMolBlock(tmp_mol)
+
+    def run_calculation(self, covalent_factor: float = 1.3) -> None:
+        """
+        Run single calculation on the conformer.
+        """
+        calc_results = self.calculator(self.atom_symbols, self.coordinates, self.label)
+
+        # Check that calculation succeded.
+        if calc_results.pop("normal_termination") and calc_results.pop("converged"):
+            # update structure - if the connectivity is ok.
+            if "structure" in calc_results:
+                new_coords = calc_results.pop("structure")
+                if self._check_connectivity(new_coords, covalent_factor):
+                    self._update_molblock_coords(new_coords)
+
+                    self.results = calc_results
+                    self.results['converged'] = True
+        
+        # This is super ugly, you can do better!! :)
+                else:
+                    self.results = {'converged': False}
+        else:
+                self.results = {'converged': False}
+
+
+    def write_xyz(self, filename=None):
+        """  """
+        xyz_string = ""
+        structure_block = self._molblock.split("V2000")[1]
+        natoms = 0
+        for line in structure_block.strip().split("\n"):
+            line = line.split()
+            if len(line) < 5:
+                break
+            coords = line[:3]
+            symbol = line[3]
+
+            xyz_string += f"{symbol} {' '.join(coords)}\n"
+            natoms += 1
+        xyz_string = f"{natoms} \n \n" + xyz_string
+
+        if filename is not None:
+            with open(filename, "w") as fout:
+                fout.write(xyz_string)
+        else:
+            return xyz_string
+
+
+class Reaction:
+    """
+    Contains atom-mapped reactant and product.
+    """
+
+    def __init__(
+        self,
+        reactant: MappedMolecule,
+        product: MappedMolecule,
+        charge: int = 0,
+        spin: int = 1,
+        label: str = "reaction",
+    ):
+
+        if not isinstance(reactant, MappedMolecule) and isinstance(
+            product, MappedMolecule
+        ):
+            raise ReactionException("reactant and product has to be MappedMolecules!")
+
+        self.reactant = reactant
+        self.product = product
+        self.charge = charge
+        self.spin = spin
+
+        self.reaction_label = label
+        self._path_search_calculator = None
+
+        self.ts_energy = None
+        self.ts_coordinates = None
+        self._reaction_hash = None
+
+    def __eq__(self, other):
+        """  """
+        if not type(self) is type(other):
+            raise TypeError(f"Comparing {self.__class__} to {other.__class__}")
+        return self.__hash__() == other.__hash__()
+
+    def __hash__(self):
+        if self._reaction_hash is None:
+            m = hashlib.blake2b()
+            m.update(Chem.MolToSmiles(self.reactant.rd_mol).encode("utf-8"))
+            m.update(Chem.MolToSmiles(self.product.rd_mol).encode("utf-8"))
+            self._reaction_hash = int(str(int(m.hexdigest(), 16))[:32])
+        return self._reaction_hash
+
+    @property
+    def path_search_calculator(self):
+        return self._path_search_calculator
+    
+    @path_search_calculator.setter
+    def path_search_calculator(self, calc):
+        self._path_search_calculator = calc
+
+
+    def run_path_search(self, refine_calculator = None):
+        """  """
+        self.reactant.embed_molecule(
+            confs_pr_frag=1, refine_calculator=refine_calculator, direction=[0.8, 0, 0]
+        )
+        self.product.embed_molecule(
+            confs_pr_frag=1, refine_calculator=refine_calculator, direction=[0.8, 0, 0]
+        )
+
+        if self._path_search_calculator is None:
+            raise ReactionException("Set the path search calculator")
+
+        self.ts_energy, self.ts_coordinates = self.path_search_calculator(self)
+
+    def write_ts_xyz(self):
+        """ """
+        symbols = [atom.GetSymbol() for atom in self.reactant.molecule.GetAtoms()]
+        xyz = f"{len(symbols)}\n {self.reaction_label} \n"
+        for symbol, coord in zip(symbols, self.ts_coordinates):
+            xyz += f"{symbol}  " + " ".join(map(str, coord)) + "\n"
+
+        with open(self.reaction_label + ".xyz", "w") as fout:
+            fout.write(xyz)
