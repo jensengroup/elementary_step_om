@@ -374,7 +374,7 @@ class xTBPathSearch:
 
         def run_param_set(kpush, kpull, alpha, run_num, reac_direction):
             """"""
-            os.mkdir(f"param_set{run_num}")
+            os.makedirs(f"param_set{run_num}")
             os.chdir(f"param_set{run_num}")
 
             for iter_num in range(3):
@@ -458,9 +458,10 @@ class xTBPathSearch:
 
         elif return_msg_temp300 == "increase temp":
             print("Didn't find a path. Increasing the temperature to 6000 K.")
-            os.mkdir('tmp6000')
+            os.makedirs('tmp6000')
             os.chdir('tmp6000')
             return_msg_temp6000, _, path_coords = self._find_xtb_path(temp=6000)
+            print("return code: ", return_msg_temp6000)
             if return_msg_temp6000 is True:
                 ts_energy, ts_coords = self._interpolate_ts(path_coords, npoints=20) 
                 return ts_energy, ts_coords
@@ -487,14 +488,16 @@ class xTBPathSearch:
 
         ts_energy, ts_coords = 99999.9, None
         for i in range(self._nruns):
-            os.mkdir(f"pathrun{i}")
+            print(os.getcwd())
+            os.makedirs(f"pathrun{i}")
             os.chdir(f"pathrun{i}")
             energy, coords = self._run_barrer_scan()
             if energy < ts_energy:
                 ts_energy = energy
                 ts_coords = coords
-            
-            os.chdir("../..")
+
+            os.chdir(self._root_dir)
+            os.chdir(self._root_workind_dir)
 
         if ts_energy == 99999.9:
             ts_energy = np.float("nan")
