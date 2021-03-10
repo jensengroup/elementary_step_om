@@ -3,9 +3,12 @@ import pickle
 
 from rdkit import Chem
 
-sys.path.append('/home/koerstz/github/elementary_step_om')
+sys.path.append(sys.path[0].rsplit("/", 1)[0])
+from elementary_step_om.chem import Reaction
+from elementary_step_om.xtb_calculations import xTBPathSearch
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
 
     input_file = sys.argv[1]
     with open(input_file, "rb") as f:
@@ -13,14 +16,15 @@ if __name__ == '__main__':
 
     print(f"Total number of reactions: {len(reactions)} \n")
     output_reactions = []
-    for i, reaction in enumerate(reactions):
-        reaction._reaction_label = reaction._reaction_label + f"-{i}"
-        print(f"Path search for: {reaction._reaction_label}")
+    for i, reaction in enumerate(reactions[14:]):
+        reaction.reaction_label = reaction.reaction_label + f"-{i}"
+        print(f"Path search for: {reaction.reaction_label}")
 
-        chrg = Chem.GetFormalCharge(reaction.reactant.molecule)
-        reaction.get_ts_estimate(solvent='water', charge=chrg, refine=True)
+        xtbpath = xTBPathSearch(xtb_kwds="", nruns=1)
+        reaction.path_search_calculator = xtbpath
+
+        reaction.run_path_search()
         output_reactions.append(reaction)
-        print()
 
-    with open(input_file.split('.')[0] + "_output.pkl", 'wb') as out:
+    with open(input_file.split(".")[0] + "_output.pkl", "wb") as out:
         pickle.dump(output_reactions, out)
