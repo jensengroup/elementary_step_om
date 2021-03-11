@@ -265,6 +265,9 @@ class xTBPathSearch:
         cmd = self._make_cmd()
         output, stderr = run_cmd(cmd)
 
+        with open("xtbout.log", 'w') as f:
+            f.write(output)
+
         os.chdir("..")
 
         return output
@@ -326,6 +329,7 @@ class xTBPathSearch:
     def _read_path(self, relative_path="."):
         """ Read coordinates and energies from the path search """
         path_filename = os.path.join(relative_path, "xtbpath_1.xyz")
+
         with open(path_filename, "r") as path_file:
             xtbpath = path_file.read()
 
@@ -369,8 +373,8 @@ class xTBPathSearch:
 
     def _find_xtb_path(self, temp=300):
         """"""
-        kpull_list = [-0.02, -0.02, -0.02, -0.02, -0.03, -0.03, -0.04, -0.04]
-        alp_list = [0.6, 0.6, 0.3, 0.3, 0.6, 0.6, 0.6, 0.4]
+        kpull_list = [-0.02, -0.02, -0.02, -0.03, -0.03, -0.04, -0.04]
+        alp_list =   [ 0.6 ,  0.3  , 0.3  , 0.6  , 0.6  , 0.6  , 0.4]
 
         def run_param_set(kpush, kpull, alpha, run_num, reac_direction):
             """"""
@@ -480,15 +484,34 @@ class xTBPathSearch:
         os.makedirs(self._root_workind_dir)
         os.chdir(self._root_workind_dir)
 
-    def __call__(self, reaction: Reaction):
+    def __call__(self, reaction: Reaction, embed_refine_calc = None):
         """ """
-        self.reaction = reaction
 
+        self.reaction = reaction
         self._make_root_working_directory()
+
+        # Embeding with random seed -> small difference in starting geometries.
+        np.random.seed(seed=42)
+        random_seeds = np.random.randint(1, 1000, self._nruns, dtype=int)
 
         ts_energy, ts_coords = 99999.9, None
         for i in range(self._nruns):
-            print(os.getcwd())
+            self._reactant.conformers = []
+            self._reactant.embed_molecule(
+                confs_pr_frag=1,
+                refine_calculator=embed_refine_calc,
+                direction=[0.8, 0, 0],
+                seed=random_seeds[i]
+            )
+
+            self._product.conformers = []
+            self._product.embed_molecule(
+                confs_pr_frag=1,
+                refine_calculator=embed_refine_calc,
+                direction=[0.8, 0, 0],
+                seed=random_seeds[i]
+            )
+
             os.makedirs(f"pathrun{i}")
             os.chdir(f"pathrun{i}")
             energy, coords = self._run_barrer_scan()

@@ -195,6 +195,7 @@ class BaseMolecule:
     def embed_molecule(
         self,
         confs_pr_frag: int = 1,
+        seed: int = 42,
         refine_calculator=None,
         overwrite: bool = True,
         direction: list = [0.8, 0, 0],
@@ -242,7 +243,7 @@ class BaseMolecule:
         fragments = self.get_fragments()
         fragment_confs = []
         for frag in fragments:
-            frag.make_fragment_conformers(nconfs=confs_pr_frag)
+            frag.make_fragment_conformers(nconfs=confs_pr_frag, seed=seed)
             fragment_confs.append(frag.conformers)
 
         for conf_num, frag_confs_set in enumerate(itertools.product(*fragment_confs)):
@@ -333,11 +334,11 @@ class Fragment(BaseMolecule):
 
     # TODO: This doesn't perform an UFF minimization. This is a problem when dealing
     # with organometalics.
-    def _embed_fragment(self, frag_rdkit, nconfs=20, uffSteps=5_000, seed=20):
+    def _embed_fragment(self, frag_rdkit, nconfs=20, seed=20):
         """ """
         p = AllChem.ETKDGv3()
         p.useRandomCoords = True
-        p.randomSeed = seed
+        p.randomSeed = int(seed)
 
         try:  # Can the fragment actually be embedded?
             AllChem.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
@@ -363,7 +364,6 @@ class Fragment(BaseMolecule):
             # for i, atom in enumerate(obmol):
             #    coords[i] = atom.coords
 
-            # conf.coordinates = coords
             self.conformers.append(conf)
 
     @staticmethod  # Does it need to be static??
@@ -384,8 +384,7 @@ class Fragment(BaseMolecule):
     def make_fragment_conformers(
         self,
         nconfs: int = 20,
-        uffSteps: int = 5_000,
-        seed: int = 20,
+        seed: int = 42,
         overwrite: bool = True,
     ) -> None:
         """
@@ -401,7 +400,7 @@ class Fragment(BaseMolecule):
             self.conformers = []
 
         rdkit_mol = self._dative2covalent(self.rd_mol)
-        self._embed_fragment(rdkit_mol, nconfs=nconfs, uffSteps=uffSteps, seed=seed)
+        self._embed_fragment(rdkit_mol, nconfs=nconfs, seed=seed)
 
 
 class Conformer:
@@ -619,16 +618,8 @@ class Reaction:
 
     def run_path_search(self, refine_calculator = None):
         """  """
-        self.reactant.embed_molecule(
-            confs_pr_frag=1, refine_calculator=refine_calculator, direction=[0.8, 0, 0]
-        )
-        self.product.embed_molecule(
-            confs_pr_frag=1, refine_calculator=refine_calculator, direction=[0.8, 0, 0]
-        )
-
         if self._path_search_calculator is None:
             raise ReactionException("Set the path search calculator")
-
         self.ts_energy, self.ts_coordinates = self.path_search_calculator(self)
 
     def write_ts_xyz(self):
