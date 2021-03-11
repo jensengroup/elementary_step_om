@@ -340,7 +340,9 @@ class Fragment(BaseMolecule):
         p.useRandomCoords = True
         p.randomSeed = int(seed)
 
-        try:  # Can the fragment actually be embedded?
+        # Always assign stereochemistry when embedding.
+        rdmolops.AssignStereochemistry(frag_rdkit, force=False) 
+        try:
             AllChem.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
         except RuntimeError:
             print(f"RDKit Failed to embed: {self.label}.")
@@ -379,6 +381,7 @@ class Fragment(BaseMolecule):
                 beginAtom = bond.GetBeginAtom().SetFormalCharge(0)
                 bond.SetBondType(Chem.rdchem.BondType.SINGLE)
         mol.UpdatePropertyCache(strict=False)
+        rdmolops.AssignStereochemistry(mol, force=True)
         return mol
 
     def make_fragment_conformers(
