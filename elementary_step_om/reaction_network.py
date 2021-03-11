@@ -5,7 +5,7 @@ import numpy as np
 from collections import defaultdict 
 
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import AllChem, rdmolops
 
 from .elementary_step import valid_products
 from .chem import (
@@ -18,6 +18,7 @@ class ReactionNetwork:
         self,
         reagents=None,
         solvent=None,
+        spin: int = 1,
         max_bonds=2,
         max_chemical_dist=4,
         reaction_energy_cut_off=30.0,
@@ -26,6 +27,7 @@ class ReactionNetwork:
 
         self.reagents = reagents
         self.solvent = solvent
+        self._spin = spin
 
         self._max_bonds = max_bonds
         self._max_cd = max_chemical_dist
@@ -34,6 +36,7 @@ class ReactionNetwork:
 
         self._fragment_energies = dict()
         self._unique_reactions = dict()
+        self._num_reacs = 0
 
         self.network = None
 
@@ -46,6 +49,8 @@ class ReactionNetwork:
         mapped_reactant.label = 'initial_mapped_reactant'
 
         canonical_mol = mapped_reactant.get_unmapped_molecule(label='initial_reactant')
+        self._charge = rdmolops.GetFormalCharge(canonical_mol.rd_mol)
+        print(f">> initializing: charge={self._charge} and spin(2S+1)={self._spin}")
 
         self.network = nx.MultiDiGraph()
         self.network.add_node(
@@ -116,13 +121,22 @@ class ReactionNetwork:
                     )
                 )
 
-                reac = Reaction(node_data['mapped_reactant'], mapped_product)
+                reac = Reaction(
+                    reactant=node_data['mapped_reactant'],
+                    product=mapped_product,
+                    charge=self._charge,
+                    spin=self._spin,
+                    label=f"reaction-{self._num_reacs}"
+                )
+
                 new_edges.append(
                     (
                         node_name, canonical_product.__hash__(), reac.__hash__(),
                         {"reaction": reac}
                     )
                 )
+
+                self._num_reacs += 1
 
             self.network.nodes[node_name]["is_run"] = True
             
