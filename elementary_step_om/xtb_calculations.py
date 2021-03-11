@@ -249,7 +249,7 @@ class xTBPathSearch:
     def _make_cmd(self):
         """ """
         cmd = f"{self._xTB_CMD} {self._from_file} --path --input path.inp --gfn2 --norestart "
-        cmd += f"--chrg {self._charge} --uhf {self._spin} "
+        cmd += f"--chrg {self._charge} --uhf {self._spin - 1} "
         cmd += self._xtb_kwds
         return cmd
 
