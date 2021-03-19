@@ -1,67 +1,22 @@
 import os
 import shutil
 import textwrap
-import subprocess
 import numpy as np
 
 from rdkit import Chem
 
-from .xyz2mol_local import xyz2AC_vdW
+from .calculator import Calculator, CalculatorError
+from elementary_step_om.xyz2mol_local import xyz2AC_vdW
 from elementary_step_om.io import io_xtb
 from elementary_step_om.chem import Reaction
 
 
-class CalculatorError(Exception):
-    """ Exemption for calcualtor errors """
-
-
-def run_cmd(cmd):
-    """ Run cmd to run QM program """
-    cmd = cmd.split()
-    p = subprocess.Popen(
-        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    output, err = p.communicate()
-    return output.decode("utf-8"), err.decode("utf-8")
-
-
 def get_xtb_version(xtb_path):
     """ """
-    output, _ = run_cmd(f"{xtb_path} --version")
+    output, _ = Calculator.run_cmd(f"{xtb_path} --version")
     for line in output.split('\n'):
         if "version" in line.lower():
             return line.split()[2]
-
-
-class Calculator:
-    def __init__(self, nprocs: int = 1, location: str = ".", overwrite: bool = True):
-
-        self._nprocs = nprocs
-        self._location = location
-        self._overwrite = overwrite
-        self._root_dir = os.getcwd()
-
-    def _make_working_directory(
-        self, namespace: str = None, overwrite: bool = False
-    ) -> str:
-        """ Make directory to to run calculations in. """
-        working_dir = os.path.join(self._location, namespace)
-        if os.path.isdir(working_dir) and self._overwrite:
-            shutil.rmtree(working_dir, ignore_errors=True)
-
-        elif os.path.isdir(working_dir):
-            raise CalculatorError("Working directory allready exists")
-
-        os.makedirs(working_dir)
-        os.chdir(working_dir)
-
-        return working_dir
-
-    def _remove_working_dir(self, namespace: str) -> None:
-        """ Removes working directory all and files within """
-        working_dir = os.path.join(self._location, namespace)
-        os.chdir(self._root_dir)
-        shutil.rmtree(working_dir)
 
 
 class xTBCalculator(Calculator):
@@ -131,7 +86,7 @@ class xTBCalculator(Calculator):
         input_filename = self._write_input(atoms, coords, label)
         cmd = self._make_cmd(input_filename)
 
-        output, errmsg = run_cmd(cmd)
+        output, errmsg =  Calculator.run_cmd(cmd)
 
         # Extract properties.
         if "normal termination" in errmsg:
@@ -263,7 +218,7 @@ class xTBPathSearch:
 
         self._write_input(kpush, kpull, alpha, temp, forward_reaction=forward_reaction)
         cmd = self._make_cmd()
-        output, stderr = run_cmd(cmd)
+        output, stderr =  Calculator.run_cmd(cmd)
 
         with open("xtbout.log", 'w') as f:
             f.write(output)

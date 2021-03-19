@@ -1,6 +1,5 @@
-import shutil
-import re
 import copy
+from elementary_step_om.external_calculation.gaussian_calculations import GaussianCalculator
 import itertools
 import multiprocessing as mp
 import numpy as np
@@ -11,8 +10,8 @@ from rdkit.Chem import rdmolfiles, AllChem, rdmolops
 from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers
 from rdkit.Chem.EnumerateStereoisomers import StereoEnumerationOptions
 
-from openbabel import pybel
 import hashlib
+
 
 def reassign_atom_idx(mol):
     """ Reassigns the RDKit mol object atomid to atom mapped id """
@@ -21,6 +20,28 @@ def reassign_atom_idx(mol):
     mol = Chem.RenumberAtoms(mol, new_idx)
     rdmolops.AssignStereochemistry(mol, force=True)
     return mol
+
+
+def coords_to_AC(symbols, coords, covalent_factor: float = 1.3):
+    """ """
+    pt = Chem.GetPeriodicTable()
+    new_coords = np.asarray(coords, dtype=np.float32)
+    num_atoms = len(symbols)
+
+    new_ac = np.zeros((num_atoms, num_atoms), dtype=np.int8)
+    for i in range(num_atoms):
+        for j in range(num_atoms):
+            if i > j:
+                atom_num_i = pt.GetAtomicNumber(symbols[i])
+                atom_num_j = pt.GetAtomicNumber(symbols[j])
+
+                Rcov_i = pt.GetRcovalent(atom_num_i) * covalent_factor
+                Rcov_j = pt.GetRcovalent(atom_num_j) * covalent_factor
+
+                dist = np.linalg.norm(new_coords[i] - new_coords[j])
+                if dist < Rcov_i + Rcov_j:
+                    new_ac[i, j] = new_ac[j, i] = 1
+    return new_ac
 
 
 class MoleculeException(Exception):
@@ -89,6 +110,14 @@ class BaseMolecule:
     def molblock(self) -> str:
         """ molblock are the MolBlock from self.rd_mol"""
         return Chem.MolToMolBlock(self.rd_mol)
+    
+    @property
+    def atom_symbols(self) -> list:
+        return [atom.GetSymbol() for atom in self.rd_mol.GetAtoms()]
+
+    @property
+    def ac_matrix(self):
+        return rdmolops.GetAdjacencyMatrix(self.rd_mol)
 
     @property
     def calculator(self):
@@ -487,23 +516,10 @@ class Conformer:
         self.atom_symbols = atom_symbols
 
     def _check_connectivity(self, new_coords, covalent_factor=1.3):
-        """ check that the updated structure is ok"""
-        pt = Chem.GetPeriodicTable()
-        new_coords = np.asarray(new_coords, dtype=np.float32)
-        new_ac = np.zeros(self._init_connectivity.shape, dtype=np.int8)
-        for i in range(new_coords.shape[0]):
-            for j in range(new_coords.shape[0]):
-                if i > j:
-                    atom_num_i = pt.GetAtomicNumber(self.atom_symbols[i])
-                    atom_num_j = pt.GetAtomicNumber(self.atom_symbols[j])
-
-                    Rcov_i = pt.GetRcovalent(atom_num_i) * covalent_factor
-                    Rcov_j = pt.GetRcovalent(atom_num_j) * covalent_factor
-
-                    dist = np.linalg.norm(new_coords[i] - new_coords[j])
-                    if dist < Rcov_i + Rcov_j:
-                        new_ac[i, j] = new_ac[j, i] = 1
-
+        """ check that the updated structure is ok. """
+        new_ac = coords_to_AC(
+            self.atom_symbols, new_coords, covalent_factor=covalent_factor
+            )
         if np.array_equal(new_ac, self._init_connectivity):
             return True
         return False
@@ -526,15 +542,15 @@ class Conformer:
 
         # Check that calculation succeded.
         if calc_results.pop("normal_termination") and calc_results.pop("converged"):
+            self.results = calc_results
+            self.results['converged'] = True
+
             # update structure - if the connectivity is ok.
-            if "structure" in calc_results:
+            if "structure" in self.results:
                 new_coords = calc_results.pop("structure")
                 if self._check_connectivity(new_coords, covalent_factor):
                     self._update_molblock_coords(new_coords)
-
-                    self.results = calc_results
-                    self.results['converged'] = True
-        
+                            
         # This is super ugly, you can do better!! :)
                 else:
                     self.results = {'converged': False}
@@ -618,16 +634,129 @@ class Reaction:
     def path_search_calculator(self, calc):
         self._path_search_calculator = calc
 
-
     def run_path_search(self, refine_calculator = None):
         """  """
         if self._path_search_calculator is None:
             raise ReactionException("Set the path search calculator")
         self.ts_energy, self.ts_coordinates = self.path_search_calculator(self)
 
+
+    def _run_ts_search(self,
+        atoms, coords, label, ts_g16_calculator: GaussianCalculator = None
+     ):
+        """ Run a transition state search using Gaussian. """
+
+        if ts_g16_calculator is None:
+            raise RuntimeError("Needs a G16 calculator!")
+
+        if 'structure' not in ts_g16_calculator._properties:
+            ts_g16_calculator._properties += "structure"
+        if 'frequencies' not in ts_g16_calculator._properties:
+            ts_g16_calculator._properties += "frequencies"
+
+        atoms = self.reactant.atom_symbols
+        ts_results = ts_g16_calculator(atoms, coords, label=label)
+    
+        img_frequencis = [freq for freq in ts_results.pop("frequencies") if freq < 0.0]
+        if len(img_frequencis) != 1:
+            print("not one img. frequency.")
+            ts_results['converged'] = False
+            return ts_results
+        return ts_results
+
+    def _run_irc(self,
+            atoms, ts_coords, label, irc_g16_calculator: GaussianCalculator = None
+        ):
+        """" """
+        pass
+
+    def irc_check_ts(
+        self, external_script: str = None, check_reactant=True, check_product=True
+        ):
+        """ """
+        from elementary_step_om.external_calculation.gaussian_calculations import GaussianCalculator
+        from elementary_step_om.external_calculation.xtb_calculations import xTBCalculator
+
+        if self.ts_coordinates is None:
+            raise ReactionException("Run a path search before IRC check.")
+
+        atom_symbols = self.reactant.atom_symbols
+
+        # Run TS optimization                    
+        ts_opt = GaussianCalculator(
+                kwds="opt=(ts,calcall,noeigentest)", 
+                external_script=external_script,
+                charge=self.charge, spin=self.spin,
+                properties=["energy", "structure", "frequencies"],
+                nprocs=1, 
+                memory=2,
+            )
+
+        ts_results = self._run_ts_search(
+                atom_symbols,
+                self.ts_coordinates,
+                label=self.reaction_label + "_ts_search",
+                ts_g16_calculator=ts_opt
+            )
+
+        # Run IRC
+        irc_calc_forward = GaussianCalculator(
+                kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5, forward)", 
+                external_script=external_script,
+                charge=self.charge, spin=self.spin,
+                properties=["irc_structure"],
+                nprocs=1, 
+                memory=2,
+            )
+        
+        irc_calc_reverse = GaussianCalculator(
+                kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5, reverse)", 
+                external_script=external_script,
+                charge=self.charge, spin=self.spin,
+                properties=["irc_structure"],
+                nprocs=1, 
+                memory=2,
+            )
+        
+        irc_forward_results = irc_calc_forward(atom_symbols, ts_results["structure"], label="irc_forward")
+        irc_reverse_results = irc_calc_reverse(atom_symbols, ts_results["structure"], label="irc_reverse")
+
+        # Relax IRC endpoints.
+        xtb_opt = xTBCalculator(xtb_kwds="--opt loose",  charge=self.charge, spin=self.spin)
+        irc_forward_results = xtb_opt(
+            atom_symbols, irc_forward_results["irc_structure"], label="opt_irc_fw_end"
+            )
+        irc_reverse_results = xtb_opt(
+            atom_symbols, irc_reverse_results["irc_structure"], label="opt_irc_rev_end"
+            )
+
+        # Check structures:
+        new_fw_ac = coords_to_AC(self.reactant.atom_symbols, irc_forward_results['structure'])
+        new_rev_ac = coords_to_AC(self.reactant.atom_symbols, irc_reverse_results['structure'])
+        reactant_found = any(
+                [np.array_equal(self.reactant.ac_matrix, new_fw_ac),
+                np.array_equal(self.reactant.ac_matrix, new_rev_ac)]
+            )  
+        product_found = any(
+                [np.array_equal(self.product.ac_matrix, new_fw_ac),
+                np.array_equal(self.product.ac_matrix, new_rev_ac)]
+            )  
+        
+        if check_reactant and reactant_found:
+            return True
+        elif check_product and product_found:
+            return True
+        elif check_product and check_reactant and reactant_found and product_found:
+            return True
+        elif all([check_product, check_reactant]) is False:
+            print("Did not test reactant or product. Change check_product/reactant to True.")
+            return True
+        else:
+            return False
+
     def write_ts_xyz(self):
         """ """
-        symbols = [atom.GetSymbol() for atom in self.reactant.molecule.GetAtoms()]
+        symbols = [atom.GetSymbol() for atom in self.reactant.rd_mol.GetAtoms()]
         xyz = f"{len(symbols)}\n {self.reaction_label} \n"
         for symbol, coord in zip(symbols, self.ts_coordinates):
             xyz += f"{symbol}  " + " ".join(map(str, coord)) + "\n"

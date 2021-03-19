@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     print(f"Total number of reactions: {len(reactions)} \n")
     output_reactions = []
-    for i, reaction in enumerate(reactions[14:]):
+    for i, reaction in enumerate(reactions):
         reaction.reaction_label = reaction.reaction_label + f"-{i}"
         print(f"Path search for: {reaction.reaction_label}")
 
@@ -25,6 +25,6 @@ if __name__ == "__main__":
 
         reaction.run_path_search()
         output_reactions.append(reaction)
-
+    
     with open(input_file.split(".")[0] + "_output.pkl", "wb") as out:
         pickle.dump(output_reactions, out)
