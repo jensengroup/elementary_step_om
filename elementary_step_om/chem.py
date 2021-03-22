@@ -1,5 +1,4 @@
 import copy
-from elementary_step_om.external_calculation.gaussian_calculations import GaussianCalculator
 import itertools
 import multiprocessing as mp
 import numpy as np
@@ -110,7 +109,7 @@ class BaseMolecule:
     def molblock(self) -> str:
         """ molblock are the MolBlock from self.rd_mol"""
         return Chem.MolToMolBlock(self.rd_mol)
-    
+
     @property
     def atom_symbols(self) -> list:
         return [atom.GetSymbol() for atom in self.rd_mol.GetAtoms()]
@@ -318,6 +317,7 @@ class Molecule(BaseMolecule):
 
 class MappedMolecule(BaseMolecule):
     """ """
+
     def __init__(self, molblock=None, label=None):
         super().__init__(molblock=molblock, label=label)
 
@@ -370,7 +370,7 @@ class Fragment(BaseMolecule):
         p.randomSeed = int(seed)
 
         # Always assign stereochemistry when embedding.
-        rdmolops.AssignStereochemistry(frag_rdkit, force=False) 
+        rdmolops.AssignStereochemistry(frag_rdkit, force=False)
         try:
             AllChem.EmbedMultipleConfs(frag_rdkit, numConfs=nconfs, params=p)
         except RuntimeError:
@@ -519,7 +519,7 @@ class Conformer:
         """ check that the updated structure is ok. """
         new_ac = coords_to_AC(
             self.atom_symbols, new_coords, covalent_factor=covalent_factor
-            )
+        )
         if np.array_equal(new_ac, self._init_connectivity):
             return True
         return False
@@ -543,20 +543,19 @@ class Conformer:
         # Check that calculation succeded.
         if calc_results.pop("normal_termination") and calc_results.pop("converged"):
             self.results = calc_results
-            self.results['converged'] = True
+            self.results["converged"] = True
 
             # update structure - if the connectivity is ok.
             if "structure" in self.results:
                 new_coords = calc_results.pop("structure")
                 if self._check_connectivity(new_coords, covalent_factor):
                     self._update_molblock_coords(new_coords)
-                            
-        # This is super ugly, you can do better!! :)
-                else:
-                    self.results = {'converged': False}
-        else:
-                self.results = {'converged': False}
 
+                # This is super ugly, you can do better!! :)
+                else:
+                    self.results = {"converged": False}
+        else:
+            self.results = {"converged": False}
 
     def write_xyz(self, filename=None):
         """  """
@@ -608,8 +607,8 @@ class Reaction:
         self.reaction_label = label
         self._path_search_calculator = None
 
-        self.ts_energy = None
-        self.ts_coordinates = None
+        self._ts_guess_energy = None
+        self._ts_guess_coordinates = None
         self._reaction_hash = None
 
     def __eq__(self, other):
@@ -629,136 +628,138 @@ class Reaction:
     @property
     def path_search_calculator(self):
         return self._path_search_calculator
-    
+
     @path_search_calculator.setter
     def path_search_calculator(self, calc):
-        self._path_search_calculator = calc
+        self._path_search_calculator = copy.deepcopy(calc)
 
-    def run_path_search(self, refine_calculator = None):
+    @property
+    def ts_guess_energy(self):
+        return self._ts_guess_energy
+    
+    @property
+    def ts_guess_coordinates(self):
+        return self._ts_guess_coordinates
+
+    def run_path_search(self, refine_calculator=None):
         """  """
         if self._path_search_calculator is None:
             raise ReactionException("Set the path search calculator")
-        self.ts_energy, self.ts_coordinates = self.path_search_calculator(self)
+        self._ts_guess_energy, self._ts_guess_coordinates = self.path_search_calculator(self)
 
-
-    def _run_ts_search(self,
-        atoms, coords, label, ts_g16_calculator: GaussianCalculator = None
-     ):
+    def _run_ts_search(self, ts_guess_coords, label, ts_calculator=None):
         """ Run a transition state search using Gaussian. """
 
-        if ts_g16_calculator is None:
+        if ts_calculator is None:
             raise RuntimeError("Needs a G16 calculator!")
 
-        if 'structure' not in ts_g16_calculator._properties:
-            ts_g16_calculator._properties += "structure"
-        if 'frequencies' not in ts_g16_calculator._properties:
-            ts_g16_calculator._properties += "frequencies"
+        if "structure" not in ts_calculator._properties:
+            print('added "structure" to properties')
+            ts_calculator._properties += ["structure"]
+        if "frequencies" not in ts_calculator._properties:
+            print('added "frequencies" to properties')
+            ts_calculator._properties += ["frequencies"]
 
-        atoms = self.reactant.atom_symbols
-        ts_results = ts_g16_calculator(atoms, coords, label=label)
-    
-        img_frequencis = [freq for freq in ts_results.pop("frequencies") if freq < 0.0]
-        if len(img_frequencis) != 1:
-            print("not one img. frequency.")
-            ts_results['converged'] = False
-            return ts_results
+        ts_results = ts_calculator(
+            self.reactant.atom_symbols, ts_guess_coords, label=label
+        )
+        if all([ts_results["normal_termination"], ts_results["converged"]]) is True:
+            img_frequencis = [
+                freq for freq in ts_results.pop("frequencies") if freq < 0.0
+            ]
+            if len(img_frequencis) == 1:
+                return ts_results
+            else:
+                print("not one img. frequency.")
+                ts_results["converged"] = False
+                return ts_results
+
         return ts_results
 
-    def _run_irc(self,
-            atoms, ts_coords, label, irc_g16_calculator: GaussianCalculator = None
-        ):
-        """" """
-        pass
+    def _run_irc(self, ts_coords, label, irc_calculator=None):
+        """
+        You do not need to add forward/reverse. This is done automatically.
+        TODO: perform reverse and forward in parallel.
+        """
 
-    def irc_check_ts(
-        self, external_script: str = None, check_reactant=True, check_product=True
-        ):
+        if "structure" in irc_calculator._properties:
+            print('replacing "structure" in properties with "irc_structure"')
+            structure_idx = irc_calculator._properties.index("structure")
+            irc_calculator._properties += ["irc_structure"]
+            del irc_calculator._properties[structure_idx]
+
+        irc_results = dict()
+        for rev_or_fw in ["reverse", "forward"]:  # TODO parallel loop.
+            tmp_kwds = [kwd.strip() for kwd in irc_calculator._kwds.split(",")]
+            if "reverse" in tmp_kwds:
+                del tmp_kwds[tmp_kwds.index("reverse")]
+
+            tmp_kwds.insert(-1, rev_or_fw)
+            irc_calculator._kwds = ", ".join(tmp_kwds)
+            results = irc_calculator(
+                self.reactant.atom_symbols, ts_coords, label=f"{label}_{rev_or_fw}"
+            )
+            irc_results[rev_or_fw] = results
+
+        return irc_results
+
+    def irc_check_ts(self, ts_calculator, irc_calculator, refine_calculator):
         """ """
-        from elementary_step_om.external_calculation.gaussian_calculations import GaussianCalculator
-        from elementary_step_om.external_calculation.xtb_calculations import xTBCalculator
-
-        if self.ts_coordinates is None:
+        if self.ts_guess_coordinates is None:
             raise ReactionException("Run a path search before IRC check.")
 
-        atom_symbols = self.reactant.atom_symbols
+        found_ends = {"reactant": False, "product": False}
 
-        # Run TS optimization                    
-        ts_opt = GaussianCalculator(
-                kwds="opt=(ts,calcall,noeigentest)", 
-                external_script=external_script,
-                charge=self.charge, spin=self.spin,
-                properties=["energy", "structure", "frequencies"],
-                nprocs=1, 
-                memory=2,
-            )
+        # Run TS optimization
+        ts_opt_results = self._run_ts_search(
+            self.ts_guess_coordinates,
+            label=self.reaction_label + "_ts_search",
+            ts_calculator=ts_calculator,
+        )
 
-        ts_results = self._run_ts_search(
-                atom_symbols,
-                self.ts_coordinates,
-                label=self.reaction_label + "_ts_search",
-                ts_g16_calculator=ts_opt
-            )
+        if not ts_opt_results["converged"]:
+            self.ts_results = None
+            return None
+        ts_opt_results.pop('normal_termination')
 
         # Run IRC
-        irc_calc_forward = GaussianCalculator(
-                kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5, forward)", 
-                external_script=external_script,
-                charge=self.charge, spin=self.spin,
-                properties=["irc_structure"],
-                nprocs=1, 
-                memory=2,
-            )
-        
-        irc_calc_reverse = GaussianCalculator(
-                kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5, reverse)", 
-                external_script=external_script,
-                charge=self.charge, spin=self.spin,
-                properties=["irc_structure"],
-                nprocs=1, 
-                memory=2,
-            )
-        
-        irc_forward_results = irc_calc_forward(atom_symbols, ts_results["structure"], label="irc_forward")
-        irc_reverse_results = irc_calc_reverse(atom_symbols, ts_results["structure"], label="irc_reverse")
+        irc_opt_results = self._run_irc(
+            ts_opt_results["structure"],
+            label=self.reaction_label + "_irc",
+            irc_calculator=irc_calculator,
+        )
 
-        # Relax IRC endpoints.
-        xtb_opt = xTBCalculator(xtb_kwds="--opt loose",  charge=self.charge, spin=self.spin)
-        irc_forward_results = xtb_opt(
-            atom_symbols, irc_forward_results["irc_structure"], label="opt_irc_fw_end"
-            )
-        irc_reverse_results = xtb_opt(
-            atom_symbols, irc_reverse_results["irc_structure"], label="opt_irc_rev_end"
-            )
+        # Refine IRC endpoints and check if the refined structure is either the
+        # reactant or product.
+        for rev_or_fw, results in irc_opt_results.items():
+            if not results['converged']:
+                self.ts_results = None
+                return None
 
-        # Check structures:
-        new_fw_ac = coords_to_AC(self.reactant.atom_symbols, irc_forward_results['structure'])
-        new_rev_ac = coords_to_AC(self.reactant.atom_symbols, irc_reverse_results['structure'])
-        reactant_found = any(
-                [np.array_equal(self.reactant.ac_matrix, new_fw_ac),
-                np.array_equal(self.reactant.ac_matrix, new_rev_ac)]
-            )  
-        product_found = any(
-                [np.array_equal(self.product.ac_matrix, new_fw_ac),
-                np.array_equal(self.product.ac_matrix, new_rev_ac)]
-            )  
-        
-        if check_reactant and reactant_found:
-            return True
-        elif check_product and product_found:
-            return True
-        elif check_product and check_reactant and reactant_found and product_found:
-            return True
-        elif all([check_product, check_reactant]) is False:
-            print("Did not test reactant or product. Change check_product/reactant to True.")
-            return True
-        else:
-            return False
+            ref = refine_calculator(
+                self.reactant.atom_symbols,
+                results["irc_structure"],
+                label=f"refine_irc_{rev_or_fw}",
+            )
+            endpint_ac = coords_to_AC(self.reactant.atom_symbols, ref["structure"])
+
+            found_reactant = np.array_equal(self.reactant.ac_matrix, endpint_ac)
+            found_product = np.array_equal(self.product.ac_matrix, endpint_ac)
+
+            if found_reactant:
+                found_ends["reactant"] = True
+            elif found_product:
+                found_ends["product"] = True
+
+        ts_opt_results["ts_check"] = found_ends
+        self.ts_results = ts_opt_results
+        return self.ts_results
 
     def write_ts_xyz(self):
         """ """
         symbols = [atom.GetSymbol() for atom in self.reactant.rd_mol.GetAtoms()]
         xyz = f"{len(symbols)}\n {self.reaction_label} \n"
-        for symbol, coord in zip(symbols, self.ts_coordinates):
+        for symbol, coord in zip(symbols, self.ts_guess_coordinates):
             xyz += f"{symbol}  " + " ".join(map(str, coord)) + "\n"
 
         with open(self.reaction_label + ".xyz", "w") as fout:

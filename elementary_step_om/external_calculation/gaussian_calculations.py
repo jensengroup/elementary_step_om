@@ -102,6 +102,7 @@ class GaussianCalculator(Calculator):
                 if property_value is None:
                     results = {}
                     results["normal_termination"] = False
+                    results['converged'] = False
                     break
                 
                 if property == "energy_external": # rename external energy
@@ -110,6 +111,7 @@ class GaussianCalculator(Calculator):
                 results[property] = property_value
         else:
             results['normal_termination'] = False
+            results['converged'] = False
 
         self._clean(working_dir)
         return results
