@@ -609,6 +609,10 @@ class Reaction:
 
         self._ts_guess_energy = None
         self._ts_guess_coordinates = None
+        self.ts_energy = None
+        self.ts_coordinates = None
+        self.ts_check = None
+
         self._reaction_hash = None
 
     def __eq__(self, other):
@@ -681,7 +685,6 @@ class Reaction:
         You do not need to add forward/reverse. This is done automatically.
         TODO: perform reverse and forward in parallel.
         """
-
         if "structure" in irc_calculator._properties:
             print('replacing "structure" in properties with "irc_structure"')
             structure_idx = irc_calculator._properties.index("structure")
@@ -718,13 +721,14 @@ class Reaction:
         )
 
         if not ts_opt_results["converged"]:
-            self.ts_results = None
-            return None
-        ts_opt_results.pop('normal_termination')
+            return False
+        else:
+            self.ts_coordinates = ts_opt_results.pop('structure')
+            self.ts_energy = ts_opt_results.pop('energy')
 
         # Run IRC
         irc_opt_results = self._run_irc(
-            ts_opt_results["structure"],
+            self.ts_coordinates,
             label=self.reaction_label + "_irc",
             irc_calculator=irc_calculator,
         )
@@ -733,7 +737,7 @@ class Reaction:
         # reactant or product.
         for rev_or_fw, results in irc_opt_results.items():
             if not results['converged']:
-                self.ts_results = None
+                self.check_ts = found_ends
                 return None
 
             ref = refine_calculator(
@@ -751,9 +755,7 @@ class Reaction:
             elif found_product:
                 found_ends["product"] = True
 
-        ts_opt_results["ts_check"] = found_ends
-        self.ts_results = ts_opt_results
-        return self.ts_results
+        self.ts_check = found_ends
 
     def write_ts_xyz(self):
         """ """
