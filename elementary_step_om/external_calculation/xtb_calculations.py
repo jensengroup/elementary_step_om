@@ -260,9 +260,7 @@ class xTBPathSearch:
         interpolated_energies = self._get_single_point_energies(
             interpolated_path_coords
         )
-
-        ts_idx = interpolated_energies.argmax()
-        return interpolated_energies[ts_idx], interpolated_path_coords[ts_idx]
+        return interpolated_energies, interpolated_path_coords
 
     def _is_reaction_complete(self, output):
         """ Checks that the path have an RMSD below 0.5 AA."""
@@ -407,13 +405,15 @@ class xTBPathSearch:
 
     def _run_barrer_scan(self):
         """ """
+        npoints_iterpolate = 20
+
         return_msg_temp300, _, path_coords = self._find_xtb_path(temp=300)
         if return_msg_temp300 is True:
-            ts_energy, ts_coords = self._interpolate_ts(path_coords, npoints=20) 
+            ts_energy, ts_coords = self._interpolate_ts(path_coords, npoints=npoints_iterpolate) 
             return ts_energy, ts_coords
         
         elif return_msg_temp300 == "found intermediate":
-            return float("nan"), None 
+            return None, None 
 
         elif return_msg_temp300 == "increase temp":
             print("Didn't find a path. Increasing the temperature to 6000 K.")
@@ -425,7 +425,7 @@ class xTBPathSearch:
                 ts_energy, ts_coords = self._interpolate_ts(path_coords, npoints=20) 
                 return ts_energy, ts_coords
             else:
-                return float("nan"), None
+                return None, None
 
     def _make_root_working_directory(self):
         """ Make the directory the path-search is working in """
@@ -439,17 +439,17 @@ class xTBPathSearch:
         os.makedirs(self._root_workind_dir)
         os.chdir(self._root_workind_dir)
 
-    def __call__(self, reaction: Reaction, embed_refine_calc = None):
-        """ """
-
+    def __call__(self, reaction: Reaction, seed: int = 42, embed_refine_calc = None):
+        """
+        """
         self.reaction = reaction
         self._make_root_working_directory()
 
         # Embeding with random seed -> small difference in starting geometries.
-        np.random.seed(seed=42)
+        np.random.seed(seed=seed)
         random_seeds = np.random.randint(1, 1000, self._nruns, dtype=int)
 
-        ts_energy, ts_coords = 99999.9, None
+        ts_energy, ts_coords = [], []
         for i in range(self._nruns):
             self._reactant.conformers = []
             self._reactant.embed_molecule(
@@ -463,22 +463,18 @@ class xTBPathSearch:
             self._product.embed_molecule(
                 confs_pr_frag=1,
                 refine_calculator=embed_refine_calc,
-                direction=[0.8, 0, 0],
+                direction=[0.8, 0., 0.],
                 seed=random_seeds[i]
             )
 
             os.makedirs(f"pathrun{i}")
             os.chdir(f"pathrun{i}")
             energy, coords = self._run_barrer_scan()
-            if energy < ts_energy:
-                ts_energy = energy
-                ts_coords = coords
+            
+            ts_energy.append(energy)
+            ts_coords.append(coords)
 
             os.chdir(self._root_dir)
             os.chdir(self._root_workind_dir)
 
-        if ts_energy == 99999.9:
-            ts_energy = np.float("nan")
-
-        os.chdir(self._root_dir)
         return ts_energy, ts_coords

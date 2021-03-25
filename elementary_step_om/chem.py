@@ -607,10 +607,10 @@ class Reaction:
         self.reaction_label = label
         self._path_search_calculator = None
 
-        self._ts_guess_energy = None
-        self._ts_guess_coordinates = None
-        self.ts_energy = None
-        self.ts_coordinates = None
+        self._ts_path_energies = None
+        self._ts_path_coordinates = None
+        self._ts_energies = []
+        self._ts_coordinates = []
         self.ts_check = None
 
         self._reaction_hash = None
@@ -638,21 +638,37 @@ class Reaction:
         self._path_search_calculator = copy.deepcopy(calc)
 
     @property
-    def ts_guess_energy(self):
-        return self._ts_guess_energy
-    
+    def ts_guess_energies(self):
+        """
+        """
+        ts_guess_energies = []
+        for energies in self._ts_path_energies:
+            ts_guess_energies.append(energies.max())
+        return np.array(ts_guess_energies)
+
     @property
     def ts_guess_coordinates(self):
-        return self._ts_guess_coordinates
+        """
+        """
+        ts_guess_coordinates = []
+        for energies, coords in zip(self._ts_path_energies, self._ts_path_coordinates):
+            if energies is None:
+                continue
+            ts_guess_coordinates.append(coords[energies.argmax()])
+        return np.asarray(ts_guess_coordinates)
 
-    def run_path_search(self, refine_calculator=None):
-        """  """
+    def run_path_search(self, seed=42):  # TODO make it possible to take list og coords and energies
+        """
+        """
         if self._path_search_calculator is None:
             raise ReactionException("Set the path search calculator")
-        self._ts_guess_energy, self._ts_guess_coordinates = self.path_search_calculator(self)
+        self._ts_path_energies, self._ts_path_coordinates = self.path_search_calculator(self, seed=seed)
 
-    def _run_ts_search(self, ts_guess_coords, label, ts_calculator=None):
+    def _run_ts_search(self, ts_calculator=None):
         """ Run a transition state search using Gaussian. """
+
+        if self.ts_guess_coordinates is None:
+            raise ReactionException("Run a path search before TS search.")
 
         if ts_calculator is None:
             raise RuntimeError("Needs a G16 calculator!")
@@ -663,24 +679,23 @@ class Reaction:
         if "frequencies" not in ts_calculator._properties:
             print('added "frequencies" to properties')
             ts_calculator._properties += ["frequencies"]
+        
+        for coords in self.ts_guess_coordinates:
+            ts_results = ts_calculator(
+                self.reactant.atom_symbols, coords, label=self.reaction_label
+            )
+            if ts_results["converged"] is True:
+                img_frequencis = [freq for freq in ts_results["frequencies"] if freq < 0.0]
+                if len(img_frequencis) == 1:
+                    self._ts_coordinates.append(ts_results['structure'])
+                    self._ts_energies.append(ts_results['energy'])
+                else:
+                    print("not one img. frequency.")
+        
+        self._ts_coordinates = np.array(self._ts_coordinates)
+        self._ts_energies = np.array(self._ts_energies)
 
-        ts_results = ts_calculator(
-            self.reactant.atom_symbols, ts_guess_coords, label=label
-        )
-        if all([ts_results["normal_termination"], ts_results["converged"]]) is True:
-            img_frequencis = [
-                freq for freq in ts_results.pop("frequencies") if freq < 0.0
-            ]
-            if len(img_frequencis) == 1:
-                return ts_results
-            else:
-                print("not one img. frequency.")
-                ts_results["converged"] = False
-                return ts_results
-
-        return ts_results
-
-    def _run_irc(self, ts_coords, label, irc_calculator=None):
+    def _run_irc(self, irc_calculator = None, refine_calculator = None):
         """
         You do not need to add forward/reverse. This is done automatically.
         TODO: perform reverse and forward in parallel.
@@ -691,78 +706,89 @@ class Reaction:
             irc_calculator._properties += ["irc_structure"]
             del irc_calculator._properties[structure_idx]
 
-        irc_results = dict()
-        for rev_or_fw in ["reverse", "forward"]:  # TODO parallel loop.
-            tmp_kwds = [kwd.strip() for kwd in irc_calculator._kwds.split(",")]
-            if "reverse" in tmp_kwds:
-                del tmp_kwds[tmp_kwds.index("reverse")]
+        all_irc_results = []
+        for ts_coords in self._ts_coordinates:
+            irc_results = dict()    
+            for rev_or_fw in ["reverse", "forward"]:
+                tmp_kwds = [kwd.strip() for kwd in irc_calculator._kwds.split(",")]
+                if "reverse" in tmp_kwds:
+                    del tmp_kwds[tmp_kwds.index("reverse")]
+                elif "forward" in tmp_kwds:
+                    del tmp_kwds[tmp_kwds.index("forward")]
+                tmp_kwds.insert(-1, rev_or_fw)
+                irc_calculator._kwds = ", ".join(tmp_kwds)
 
-            tmp_kwds.insert(-1, rev_or_fw)
-            irc_calculator._kwds = ", ".join(tmp_kwds)
-            results = irc_calculator(
-                self.reactant.atom_symbols, ts_coords, label=f"{label}_{rev_or_fw}"
-            )
-            irc_results[rev_or_fw] = results
+                results = irc_calculator(
+                    self.reactant.atom_symbols, ts_coords, label=f"{self.reaction_label}_{rev_or_fw}"
+                )
+                results = dict([
+                    itm for itm in results.items() if itm[0] in ['converged', 'irc_structure']
+                ])
+                irc_results[rev_or_fw] = results
+        
+            all_irc_results.append(irc_results)
 
-        return irc_results
+        # Refine IRC endpoint with refine calculator.
+        if refine_calculator is not None:
+            # Loop over each IRC
+            for irc_result in all_irc_results: # Loop over each IRC
+                for rev_or_fwd, results in irc_result.items():
+
+                    if not results['converged']:
+                        continue
+                     
+                    refine_results = refine_calculator(
+                        self.reactant.atom_symbols,
+                        results["irc_structure"],
+                        label=f"{self.reaction_label}_refine_irc_{rev_or_fwd}",
+                    )
+                    results['irc_structure'] = refine_results['structure']
+
+        return all_irc_results
 
     def irc_check_ts(self, ts_calculator, irc_calculator, refine_calculator):
         """ """
-        if self.ts_guess_coordinates is None:
-            raise ReactionException("Run a path search before IRC check.")
-
-        found_ends = {"reactant": False, "product": False}
-
         # Run TS optimization
-        ts_opt_results = self._run_ts_search(
-            self.ts_guess_coordinates,
-            label=self.reaction_label + "_ts_search",
-            ts_calculator=ts_calculator,
-        )
-
-        if not ts_opt_results["converged"]:
-            return False
-        else:
-            self.ts_coordinates = ts_opt_results.pop('structure')
-            self.ts_energy = ts_opt_results.pop('energy')
+        self._run_ts_search(ts_calculator)
 
         # Run IRC
-        irc_opt_results = self._run_irc(
-            self.ts_coordinates,
-            label=self.reaction_label + "_irc",
-            irc_calculator=irc_calculator,
-        )
+        irc_endpoints_results = self._run_irc(irc_calculator, refine_calculator)
+        ts_ok = []
+        for irc_enpoints in irc_endpoints_results:
+            found_ends = {"reactant": False, "product": False}
+            for results in irc_enpoints.values():
+                endpint_ac = coords_to_AC(self.reactant.atom_symbols, results["irc_structure"])
+                found_reactant = np.array_equal(self.reactant.ac_matrix, endpint_ac)
+                found_product = np.array_equal(self.product.ac_matrix, endpint_ac)
+                if found_reactant:
+                    found_ends["reactant"] = True
+                elif found_product:
+                    found_ends["product"] = True
+            ts_ok.append(found_ends)
+        
+        self.ts_check = ts_ok
 
-        # Refine IRC endpoints and check if the refined structure is either the
-        # reactant or product.
-        for rev_or_fw, results in irc_opt_results.items():
-            if not results['converged']:
-                self.check_ts = found_ends
-                return None
+    def write_ts(self):
+        """ Write xyz file for all TS's """
 
-            ref = refine_calculator(
-                self.reactant.atom_symbols,
-                results["irc_structure"],
-                label=f"refine_irc_{rev_or_fw}",
-            )
-            endpint_ac = coords_to_AC(self.reactant.atom_symbols, ref["structure"])
+        symbols = [atom.GetSymbol() for atom in self.reactant.rd_mol.GetAtoms()]
+        for i, (energy, coords) in enumerate(zip(self._ts_energies, self._ts_coordinates)):
+            name = f"{self.reaction_label}_ts{i}"
+            xyz = f"{len(symbols)}\n {name}: {energy:.5f} Hartree \n"
+            for symbol, coord in zip(symbols, coords):
+                xyz += f"{symbol}  " + " ".join(map(str, coord)) + "\n"
+                
+            with open(name + ".xyz", 'w') as xyzfile:
+                xyzfile.write(xyz)
 
-            found_reactant = np.array_equal(self.reactant.ac_matrix, endpint_ac)
-            found_product = np.array_equal(self.product.ac_matrix, endpint_ac)
-
-            if found_reactant:
-                found_ends["reactant"] = True
-            elif found_product:
-                found_ends["product"] = True
-
-        self.ts_check = found_ends
-
-    def write_ts_xyz(self):
+    def write_ts_guess(self):
         """ """
         symbols = [atom.GetSymbol() for atom in self.reactant.rd_mol.GetAtoms()]
-        xyz = f"{len(symbols)}\n {self.reaction_label} \n"
-        for symbol, coord in zip(symbols, self.ts_guess_coordinates):
-            xyz += f"{symbol}  " + " ".join(map(str, coord)) + "\n"
-
-        with open(self.reaction_label + ".xyz", "w") as fout:
-            fout.write(xyz)
+        for i, (energy, coords) in enumerate(zip(self.ts_guess_energies, self.ts_guess_coordinates)):
+            name = f"{self.reaction_label}_tsguess{i}"
+            xyz = f"{len(symbols)}\n {name}: {energy:.5f} Hartree \n"
+            for symbol, coord in zip(symbols, coords):
+                xyz += f"{symbol}  " + " ".join(map(str, coord)) + "\n"
+                
+            with open(name + ".xyz", 'w') as xyzfile:
+                xyzfile.write(xyz)
