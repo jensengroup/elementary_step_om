@@ -476,5 +476,6 @@ class xTBPathSearch:
 
             os.chdir(self._root_dir)
             os.chdir(self._root_workind_dir)
-
+        
+        os.chdir(self._root_dir)
         return ts_energy, ts_coords
