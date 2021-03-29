@@ -113,5 +113,6 @@ class GaussianCalculator(Calculator):
             results['normal_termination'] = False
             results['converged'] = False
 
+        os.chdir(self._root_dir)
         self._clean(working_dir)
         return results

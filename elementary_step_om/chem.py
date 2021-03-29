@@ -6,6 +6,7 @@ import numpy as np
 from rdkit.Geometry import Point3D
 from rdkit import Chem
 from rdkit.Chem import rdmolfiles, AllChem, rdmolops
+from rdkit.Chem import rdChemReactions
 from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers
 from rdkit.Chem.EnumerateStereoisomers import StereoEnumerationOptions
 
@@ -643,6 +644,8 @@ class Reaction:
         """
         ts_guess_energies = []
         for energies in self._ts_path_energies:
+            if energies is None:
+                continue
             ts_guess_energies.append(energies.max())
         return np.array(ts_guess_energies)
 
@@ -656,6 +659,14 @@ class Reaction:
                 continue
             ts_guess_coordinates.append(coords[energies.argmax()])
         return np.asarray(ts_guess_coordinates)
+
+    @property
+    def rd_reaction(self):
+        """ """
+        rd_reaction = rdChemReactions.ChemicalReaction()
+        rd_reaction.AddReactantTemplate(self.reactant.rd_mol)
+        rd_reaction.AddProductTemplate(self.product.rd_mol)
+        return rd_reaction
 
     def run_path_search(self, seed=42):  # TODO make it possible to take list og coords and energies
         """
