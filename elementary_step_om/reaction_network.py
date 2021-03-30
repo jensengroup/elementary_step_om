@@ -289,7 +289,7 @@ class ReactionNetwork:
             reactant = self.network.nodes[node_in]['canonical_reactant']
             reactant_E = self._mol_energy(reactant.get_fragments())
             edge_data['reaction'] = new_reaction
-            edge_data['barrier_energy'] = new_reaction.ts_energy - reactant_E
+            edge_data['barrier_energy'] = min(new_reaction.ts_guess_energies, default=np.float('nan')) - reactant_E
 
     def prune_reactions(self, remove_isolates=True):
         """ """
@@ -303,6 +303,75 @@ class ReactionNetwork:
 
         if remove_isolates:
             self.network.remove_nodes_from(list(nx.isolates(self.network)))
+
+    def get_reactions_to_check(self, filename=None, overwrite=True):
+        """ """
+        reactions_to_check = []
+        for node_in, node_out, reaction in self.network.edges(data='reaction'):
+                reactions_to_check.append(reaction)
+        
+        if os.path.exists(filename):
+            if overwrite:
+                with open(filename, 'wb') as _file:
+                    pickle.dump(reactions_to_check, _file)
+        
+        elif not os.path.exists(filename) and filename is not None:
+            with open(filename, 'wb') as _file:
+                    pickle.dump(reactions_to_check, _file)
+
+        return reactions_to_check
+    
+    def load_reaction_after_check(self, filename):
+        """ """
+        with open(filename, 'rb') as inp:
+            output_reactions = pickle.load(inp)
+        
+        new_reactions = {}
+        for out_reaction in output_reactions:
+            new_reactions[out_reaction.__hash__()] = out_reaction
+
+        for _, _, key, data in self.network.edges(keys=True, data=True):
+            try:
+                data['reaction'] = new_reactions[key]
+            except:
+                continue
+   
+    def prune_reactions_ts_check(
+        self, check_reactant=False, check_product=False, inplace=False
+    ):
+        """ """
+
+        # Set edge data
+        for _, _, data in self.network.edges(data=True):
+            data['ts_ok'] = False
+            if data['reaction'].ts_check is None:
+                continue    
+
+            for check in data['reaction'].ts_check:
+                if check_reactant and not check_product:
+                    if check['reactant'] is True:
+                        data['ts_ok'] = True
+                        break
+                if check_product and not check_reactant:
+                    if check['product'] is True:
+                        data['ts_ok'] = True
+                        break
+                if check_reactant and check_reactant:
+                    if all([check['reactant'], check['product']]) is True:
+                        data['ts_ok'] = True
+                        break
+
+        # Filter the network
+        def filter_ts_ok(nin, nout, key):
+            return self.network[nin][nout][key]["ts_ok"] == True
+
+        view = nx.subgraph_view(self.network, filter_edge=filter_ts_ok).copy()
+        view.remove_nodes_from(list(nx.isolates(view)))
+
+        if inplace:
+            self.network = view
+        
+        return view
 
     def save(self, filename):
         """save class as self.name.txt"""

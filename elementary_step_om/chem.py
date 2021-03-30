@@ -608,8 +608,8 @@ class Reaction:
         self.reaction_label = label
         self._path_search_calculator = None
 
-        self._ts_path_energies = None
-        self._ts_path_coordinates = None
+        self._ts_path_energies = []
+        self._ts_path_coordinates = []
         self._ts_energies = []
         self._ts_coordinates = []
         self.ts_check = None
@@ -678,7 +678,7 @@ class Reaction:
     def _run_ts_search(self, ts_calculator=None):
         """ Run a transition state search using Gaussian. """
 
-        if self.ts_guess_coordinates is None:
+        if len(self.ts_guess_coordinates) == 0:
             raise ReactionException("Run a path search before TS search.")
 
         if ts_calculator is None:
