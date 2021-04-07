@@ -167,6 +167,42 @@ class BaseMolecule:
         rdmolops.AssignStereochemistry(
             self.rd_mol, cleanIt=True, flagPossibleStereoCenters=True, force=True
         )
+    
+    def add_rdmol(self, molecule) -> None:
+        """
+        Adds an rdmol fragment to the molecule.
+        """
+        if not isinstance(molecule, Chem.rdchem.Mol):
+            raise RuntimeError(f"can't add {type(molecule)} to {self.__class__.__name__}")
+        molecule = copy.deepcopy(molecule)
+
+        self.rd_mol.RemoveAllConformers()
+        molecule.RemoveAllConformers()
+
+        # Reset attributes
+        if self.has_atom_mapping():
+            max_idx = 0
+            for atom in self.rd_mol.GetAtoms():
+                if atom.GetAtomMapNum() > max_idx:
+                    max_idx =  atom.GetAtomMapNum()
+
+            print(max_idx)
+            if molecule.GetAtomWithIdx(0).GetAtomMapNum() > 0:
+                for atom in molecule.GetAtoms():
+                    atom.SetAtomMapNum(atom.GetAtomMapNum() + max_idx)
+            else:
+                for atom in molecule.GetAtoms():
+                    atom.SetAtomMapNum(atom.GetIdx() + max_idx)
+    
+        self.rd_mol = Chem.CombineMols(self.rd_mol, molecule)
+        self.rd_mol = reassign_atom_idx(self.rd_mol)
+        AllChem.Compute2DCoords(self.rd_mol)
+
+        self.conformers = []
+        self._calculator = None
+
+        self.results = {}
+        self._mol_hash = None
 
     def _remove_atom_mapping(self) -> None:
         """ Remove atom mapping from RDKit mol object """
