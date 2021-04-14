@@ -186,13 +186,12 @@ class BaseMolecule:
                 if atom.GetAtomMapNum() > max_idx:
                     max_idx =  atom.GetAtomMapNum()
 
-            print(max_idx)
             if molecule.GetAtomWithIdx(0).GetAtomMapNum() > 0:
                 for atom in molecule.GetAtoms():
                     atom.SetAtomMapNum(atom.GetAtomMapNum() + max_idx)
             else:
                 for atom in molecule.GetAtoms():
-                    atom.SetAtomMapNum(atom.GetIdx() + max_idx)
+                    atom.SetAtomMapNum(atom.GetIdx() + max_idx + 1)
     
         self.rd_mol = Chem.CombineMols(self.rd_mol, molecule)
         self.rd_mol = reassign_atom_idx(self.rd_mol)
