@@ -1,13 +1,15 @@
-from copy import deepcopy
+#from copy import deepcopy
 import os
 import networkx as nx
 import pickle
-from networkx.algorithms import node_classification
+#from networkx.algorithms import node_classification
 import numpy as np
-from collections import defaultdict
+#from collections import defaultdict
+#import hashlib
 
-from rdkit import Chem
-from rdkit.Chem import AllChem, rdmolops
+#from rdkit import Chem
+#from rdkit.Chem import AllChem, rdmolops
+from rdkit.Chem import rdmolops
 
 from elementary_step_om.elementary_step import TakeElementaryStep
 from .chem import MappedMolecule, Reaction
@@ -248,7 +250,7 @@ class ReactionNetwork:
 
         def filter_energies(nin, nout, key):
             """Get reactions with reaction energy < max_energy and
-            not no barrier energy computed.
+            no barrier energy computed.
             """
             ok_energy = (
                 self._network[nin][nout][key]["reaction_energy"] <= max_reaction_energy
@@ -259,9 +261,15 @@ class ReactionNetwork:
         unique_reactions = []
         subgraph = nx.subgraph_view(self._network, filter_edge=filter_energies)
         for _, _, reaction in subgraph.edges(data="reaction"):
-            if reaction.__hash__() not in self._unique_reactions:
-                self._unique_reactions[reaction.__hash__()] = reaction
-            unique_reactions.append(reaction)
+            reactant_hash = reaction.reactant.__hash__()
+            product_hash = reaction.product.__hash__() 
+
+            # Same hash going from reactant to product.
+            reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
+            
+            if reaction_set_hash not in self._unique_reactions:
+                self._unique_reactions[reaction_set_hash] = reaction
+                unique_reactions.append(reaction)
 
         if os.path.exists(filename) and not overwrite:
             pass
@@ -272,21 +280,32 @@ class ReactionNetwork:
         return unique_reactions
 
     def load_reaction_energies(self, filename):
-        """ """
+        """
+        """
+
         # Load reaction data
         computed_reactions = dict()
         with open(filename, "rb") as inp:
             output_reactions = pickle.load(inp)
             for reaction in output_reactions:
-                computed_reactions[reaction.__hash__()] = reaction
+                reactant_hash = reaction.reactant.__hash__()
+                product_hash = reaction.product.__hash__() 
+
+                # Same hash going from reactant to product.
+                reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
+                self._unique_reactions[reaction_set_hash] = reaction
 
         # Compute barrier energy.
-        for node_in, node_out, edge_data in self._network.edges(data=True):
-            reaction_hash = edge_data["reaction"].__hash__()
+        for node_in, _, edge_data in self._network.edges(data=True):
+            reactant_hash = reaction.reactant.__hash__()
+            product_hash = reaction.product.__hash__() 
+
+            # Same hash going from reactant to product.
+            reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
             if (
-                reaction_hash in computed_reactions.keys()
+                reaction_set_hash in  self._unique_reactions.keys()
             ):  # This shouldn't be computed but input to.
-                new_reaction = computed_reactions[reaction_hash]
+                new_reaction = self._unique_reactions[reaction_set_hash]
             else:
                 edge_data["barrier_energy"] = None
                 continue
