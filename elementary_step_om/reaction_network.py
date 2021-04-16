@@ -1,6 +1,7 @@
 import os
 import networkx as nx
 import pickle
+from networkx.classes.function import all_neighbors
 import numpy as np
 
 from rdkit.Chem import rdmolops
@@ -19,6 +20,7 @@ class ReactionNetwork:
 
         self._fragment_energies = dict()
         self._unique_reactions = dict()
+        self._checked_reactions = dict()
 
         self._initialize_network()
 
@@ -41,6 +43,12 @@ class ReactionNetwork:
         if mol_hash in self._fragment_energies:
             return self._fragment_energies[mol_hash]
         return np.float("nan")
+    
+    def get_reaction_hash(self, reaction):
+        """ Same hash going from reactant to product. """
+        reaction_hash = reaction.reactant.__hash__()
+        product_hash = reaction.product.__hash__()
+        return hash(frozenset([reaction_hash, product_hash]))
 
     def get_energy_filter(self, max_reaction_energy=30.0, max_barrier=None):
         def energy_filter(nin, nout, key):
@@ -61,6 +69,9 @@ class ReactionNetwork:
         def check_filter(nin, nout, key):
             edge_data = self._network[nin][nout][key]
             
+            if "ts_ok" not in edge_data:
+                return False
+
             for check in edge_data['ts_ok']:
                 reac_check, prod_check = check.values()
 
@@ -77,20 +88,30 @@ class ReactionNetwork:
                     if reac_check or prod_check:
                         return True
             return False         
+        
         return check_filter
 
+    def get_all_attibues(self):        
+        all_atributes = set()
+        for _, _, data in self._network.edges(data=True):
+            for att in data.keys():
+                all_atributes.add(att)
+        return all_atributes
+    
     def network_view(self, ekstra_filters=None):
         """
         Removes all paths not completely computed, and paths that
         doesn't go thorough the filters.
         """
+        all_atributes = self.get_all_attibues()
+
         def filter_network_view(nin, nout, key):
             edge_data = self._network[nin][nout][key]
+
             # barrier is only computed for some paths.
-            if set(['reaction', 'reaction_energy', 'barrier_energy']).issubset(set(edge_data)):
-                if edge_data['barrier_energy'] is None:
-                    return False
-            return True
+            if all_atributes.issubset(set(edge_data)):
+                return True
+            return False
 
         tmp = nx.subgraph_view(self._network, filter_edge=filter_network_view).copy()
         if ekstra_filters is not None:
@@ -235,7 +256,6 @@ class ReactionNetwork:
         ).copy()
         self._network.remove_nodes_from(list(nx.isolates(self._network)))
 
-    #TODO: max_reaction_energy change to filter.
     def get_unique_reactions(
         self, filename: str, max_reaction_energy: float = 30.0, overwrite: bool = True
     ):
@@ -254,11 +274,7 @@ class ReactionNetwork:
         unique_reactions = []
         subgraph = nx.subgraph_view(self._network, filter_edge=filter_energies)
         for _, _, reaction in subgraph.edges(data="reaction"):
-            reactant_hash = reaction.reactant.__hash__()
-            product_hash = reaction.product.__hash__() 
-
-            # Same hash going from reactant to product.
-            reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
+            reaction_set_hash = self.get_reaction_hash(reaction)
             
             if reaction_set_hash not in self._unique_reactions:
                 self._unique_reactions[reaction_set_hash] = None 
@@ -281,24 +297,14 @@ class ReactionNetwork:
         with open(filename, "rb") as inp:
             output_reactions = pickle.load(inp)
             for reaction in output_reactions:
-                reactant_hash = reaction.reactant.__hash__()
-                product_hash = reaction.product.__hash__() 
-
-                # Same hash going from reactant to product.
-                reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
-                
+                reaction_set_hash = self.get_reaction_hash(reaction)                
                 ts_energy = min(reaction.ts_guess_energies, default=np.float("nan"))
                 self._unique_reactions[reaction_set_hash] = ts_energy
-
 
         # Compute barrier energy.
         for node_in, _, edge_data in self._network.edges(data=True):
             new_reaction = edge_data['reaction']
-            reactant_hash = new_reaction.reactant.__hash__()
-            product_hash = new_reaction.product.__hash__() 
-
-            # Same hash going from reactant to product.
-            reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
+            reaction_set_hash = self.get_reaction_hash(new_reaction)   
 
             if reaction_set_hash in  self._unique_reactions.keys():
                 ts_energy = self._unique_reactions[reaction_set_hash]
@@ -333,11 +339,20 @@ class ReactionNetwork:
         reactions_to_check = []
 
         def filter_is_checked(nin, nout, key):
-            barrier_energy = self._network[nin][nout][key]["barrier_energy"]
+            edge_data = self._network[nin][nout][key]
+            barrier_energy = edge_data["barrier_energy"]
+            
+            # Barrier energy is not computed, no need to check
             if barrier_energy is None:
                 return False
-            ok_barrier = barrier_energy <= max_barrier_energy
-            not_checked = not "ts_ok" in self._network[nin][nout][key]
+            
+            # Check if barrier energy is < max_barrier_energy
+            ok_barrier = edge_data["barrier_energy"] < max_barrier_energy
+
+            # and the reactions is not a "back reaction"
+            reaction_hash = self.get_reaction_hash(edge_data['reaction'])
+            not_checked = reaction_hash not in self._checked_reactions.keys()
+
             return all([ok_barrier, not_checked])
 
         subgraph = nx.subgraph_view(self._network, filter_edge=filter_is_checked)
@@ -356,22 +371,17 @@ class ReactionNetwork:
         with open(filename, "rb") as inp:
             output_reactions = pickle.load(inp)
 
-        new_reactions = {}
         for out_reaction in output_reactions:
-            new_reactions[out_reaction.__hash__()] = out_reaction
+            reaction_hash = self.get_reaction_hash(out_reaction)
+            self._checked_reactions[reaction_hash] = out_reaction
 
-        for _, _, key, data in self._network.edges(keys=True, data=True):
-            data["ts_ok"] = []
-            try:
-                data["reaction"] = new_reactions[key]
-            except:
-                continue
-
-            # load check data
-            if data["reaction"].ts_check is None:
-                continue
-
-            data["ts_ok"] = data["reaction"].ts_check
+        for _, _, data in self._network.edges(data=True):
+            reaction_hash = self.get_reaction_hash(data['reaction'])
+            if reaction_hash in self._checked_reactions:
+                data["ts_ok"] = False
+                reaction_check_status = self._checked_reactions[reaction_hash].ts_check
+                if reaction_check_status is not None:
+                    data["ts_ok"] = reaction_check_status
 
     def _prune_nan_ts_check(self):
         """
@@ -380,20 +390,29 @@ class ReactionNetwork:
         """
 
         def filter_non_ts(nin, nout, key):
+            reaction_edge = self._network[nin][nout][key]
+
             # Did you compute a barrier
-            if self._network[nin][nout][key]["barrier_energy"] is None:
+            if "ts_ok" not in reaction_edge:
                 return True
-
+            
             # Did any path converge?
-            ts_not_ok = len(self._network[nin][nout][key]["ts_ok"]) != 0
+            if reaction_edge['ts_ok'] is False:
+                return False
 
+            if len(reaction_edge['ts_ok']) == 0:
+                return False
+            
             # Check if one path terminates in either reactant or product
             one_true = False
             for check in self._network[nin][nout][key]["ts_ok"]:
                 if any(check.values()):
                     one_true = True
                     break
-            return all([ts_not_ok, one_true])
+            if one_true is False:
+                return False
+
+            return True
 
         self._network = nx.subgraph_view(self._network, filter_edge=filter_non_ts).copy()
         self._network.remove_nodes_from(list(nx.isolates(self._network))) 
