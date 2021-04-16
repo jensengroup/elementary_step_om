@@ -1,18 +1,12 @@
-#from copy import deepcopy
 import os
 import networkx as nx
 import pickle
-#from networkx.algorithms import node_classification
 import numpy as np
-#from collections import defaultdict
-#import hashlib
 
-#from rdkit import Chem
-#from rdkit.Chem import AllChem, rdmolops
 from rdkit.Chem import rdmolops
 
 from elementary_step_om.elementary_step import TakeElementaryStep
-from .chem import MappedMolecule, Reaction
+from .chem import MappedMolecule
 
 
 class ReactionNetwork:
@@ -137,7 +131,6 @@ class ReactionNetwork:
                 cd=max_cd,
             )
             nodes_to_step.append(take_step)
-            #node_data['is_run'] = None
             self._network.nodes[node_name]['is_run'] = None
         
         print(f">> # nodes to run: {len(nodes_to_step)}")
@@ -268,7 +261,7 @@ class ReactionNetwork:
             reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
             
             if reaction_set_hash not in self._unique_reactions:
-                self._unique_reactions[reaction_set_hash] = reaction
+                self._unique_reactions[reaction_set_hash] = None 
                 unique_reactions.append(reaction)
 
         if os.path.exists(filename) and not overwrite:
@@ -293,27 +286,32 @@ class ReactionNetwork:
 
                 # Same hash going from reactant to product.
                 reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
-                self._unique_reactions[reaction_set_hash] = reaction
+                
+                ts_energy = min(reaction.ts_guess_energies, default=np.float("nan"))
+                self._unique_reactions[reaction_set_hash] = ts_energy
+
 
         # Compute barrier energy.
         for node_in, _, edge_data in self._network.edges(data=True):
-            reactant_hash = reaction.reactant.__hash__()
-            product_hash = reaction.product.__hash__() 
+            new_reaction = edge_data['reaction']
+            reactant_hash = new_reaction.reactant.__hash__()
+            product_hash = new_reaction.product.__hash__() 
 
             # Same hash going from reactant to product.
             reaction_set_hash = hash(frozenset([reactant_hash, product_hash]))
-            if (
-                reaction_set_hash in  self._unique_reactions.keys()
-            ):  # This shouldn't be computed but input to.
-                new_reaction = self._unique_reactions[reaction_set_hash]
+
+            if reaction_set_hash in  self._unique_reactions.keys():
+                ts_energy = self._unique_reactions[reaction_set_hash]
+                if ts_energy is None:
+                    edge_data["barrier_energy"] = None
+                    continue
             else:
                 edge_data["barrier_energy"] = None
                 continue
-
+            
             reactant = self._network.nodes[node_in]["canonical_reactant"]
             reactant_E = self._mol_energy(reactant.get_fragments())
             edge_data["reaction"] = new_reaction
-            ts_energy = min(new_reaction.ts_guess_energies, default=np.float("nan"))
             edge_data["barrier_energy"] = ts_energy - reactant_E
 
     def _prune_nan_reaction_paths(self):
