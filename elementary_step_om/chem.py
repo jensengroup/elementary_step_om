@@ -306,6 +306,37 @@ class BaseMolecule:
 
         for conf_num, frag_confs_set in enumerate(itertools.product(*fragment_confs)):
             self.conformers.append(merge_fragments(frag_confs_set, conf_num))
+        
+    def prune_conformers(self, energy_cutoff: float = 0.0, sort: bool = True):
+        """
+        Remove conformers with energies that are above the `energy_cutoff` (kcal/mol)
+        meassuret from the above the most stable conformer.
+
+        If sort = True the most stable conformer is put at idx 0. 
+        """
+        energy_most_stable_conf = 9999.9
+        for conf in self.conformers:
+            if len(conf.results) != 1:
+                if conf.results['energy'] < energy_most_stable_conf:
+                    energy_most_stable_conf = conf.results['energy']
+        
+        # No conformer converged - just save one.
+        if energy_most_stable_conf == 9999.9: # No conformer converged just save one
+            if len(self.conformers) != 0:
+                self.conformers = [self.conformers[0]]
+        else: # Save conformers if below cutoff
+            energy_most_stable_conf *= 627.503 # convert to kcal/mol
+            conf_cutoff = energy_most_stable_conf + energy_cutoff
+            pruned_conformers = []
+            for conf in self.conformers:
+                if conf.results['converged']:
+                    tmp_energy_kcal = conf.results['energy'] * 627.503
+                    if tmp_energy_kcal <= conf_cutoff:
+                        pruned_conformers.append((tmp_energy_kcal, conf))
+            
+            if sort: # sort confs w.r.t. the conformer energy.
+                sorted(pruned_conformers, key=lambda x: x[0])
+            self.conformers = [conf[1] for conf in pruned_conformers]
 
 
 class Molecule(BaseMolecule):
