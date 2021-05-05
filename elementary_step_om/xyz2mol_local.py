@@ -315,7 +315,7 @@ def BO2mol(mol, BO_matrix, atoms, atomic_valence_electrons,
     else:
         mol = set_atomic_radicals(mol, atoms, atomic_valence_electrons, BO_valences,
                                   use_atom_maps=use_atom_maps)
-
+    Chem.SanitizeMol(mol)
     return mol
 
 

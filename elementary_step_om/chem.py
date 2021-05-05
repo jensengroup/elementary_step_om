@@ -60,11 +60,10 @@ class BaseMolecule:
     and is therefore comparable thorugh the equality operator and in sets.
     """
 
-    def __init__(self, molblock: str = None, label: str = None):
+    def __init__(self, molblock: str = None):
         if molblock is None:
             raise MoleculeException("Need to provide a MolBlock")
 
-        self.label = label
         self.rd_mol = None
         self.conformers = []
         self._calculator = None
@@ -100,9 +99,7 @@ class BaseMolecule:
         if all(self.rd_mol.GetConformer().GetPositions()[:, 2] == 0.0):
             self.rd_mol.RemoveAllConformers()
         else:
-            self.conformers.append(
-                Conformer(molblock=molblock, label=self.label + "_init")
-            )
+            self.conformers.append(Conformer(molblock=molblock))
             self.rd_mol.RemoveAllConformers()
             AllChem.Compute2DCoords(self.rd_mol)
 
@@ -110,6 +107,10 @@ class BaseMolecule:
     def molblock(self) -> str:
         """ molblock are the MolBlock from self.rd_mol"""
         return Chem.MolToMolBlock(self.rd_mol)
+
+    @property
+    def label(self) -> str:
+        return self.__class__.__name__ + "_" + str(self.__hash__())
 
     @property
     def atom_symbols(self) -> list:
@@ -129,20 +130,16 @@ class BaseMolecule:
             conf.calculator = calc_instance
 
     @classmethod
-    def from_molfile(cls, file, label=None):
+    def from_molfile(cls, file):
         """
         Initialize Molecule from a Molfile
         """
         if not file.endswith(("mol", "sdf")):
             raise TypeError("Only works with mol/sdf files")
 
-        # Find the Molecule label
-        if label is None:
-            label = file.split(".")[0]
-
         suppl = rdmolfiles.SDMolSupplier(file, removeHs=False, sanitize=False)
         first_mol = next(suppl)
-        obj = cls(molblock=Chem.MolToMolBlock(first_mol), label=label)
+        obj = cls(molblock=Chem.MolToMolBlock(first_mol))
         return obj
 
         # AllChem.Compute2DCoords(first_mol)
@@ -156,12 +153,12 @@ class BaseMolecule:
         # return obj
 
     @classmethod
-    def from_rdkit_mol(cls, rdkit_mol, label="molecule"):
+    def from_rdkit_mol(cls, rdkit_mol):
         """ Initialize Molecule from a RDKit mol object. """
 
         n_confs = rdkit_mol.GetConformers()
         if len(n_confs) <= 1:  # If no 3D conformers.
-            return cls(molblock=Chem.MolToMolBlock(rdkit_mol), label=label)
+            return cls(molblock=Chem.MolToMolBlock(rdkit_mol))
         else:
             raise NotImplementedError("RDKit have more than 1 Conformer.")
 
@@ -170,6 +167,41 @@ class BaseMolecule:
         rdmolops.AssignStereochemistry(
             self.rd_mol, cleanIt=True, flagPossibleStereoCenters=True, force=True
         )
+    
+    def add_rdmol(self, molecule) -> None:
+        """
+        Adds an rdmol fragment to the molecule.
+        """
+        if not isinstance(molecule, Chem.rdchem.Mol):
+            raise RuntimeError(f"can't add {type(molecule)} to {self.__class__.__name__}")
+        molecule = copy.deepcopy(molecule)
+
+        self.rd_mol.RemoveAllConformers()
+        molecule.RemoveAllConformers()
+
+        # Reset attributes
+        if self.has_atom_mapping():
+            max_idx = 0
+            for atom in self.rd_mol.GetAtoms():
+                if atom.GetAtomMapNum() > max_idx:
+                    max_idx =  atom.GetAtomMapNum()
+
+            if molecule.GetAtomWithIdx(0).GetAtomMapNum() > 0:
+                for atom in molecule.GetAtoms():
+                    atom.SetAtomMapNum(atom.GetAtomMapNum() + max_idx)
+            else:
+                for atom in molecule.GetAtoms():
+                    atom.SetAtomMapNum(atom.GetIdx() + max_idx + 1)
+    
+        self.rd_mol = Chem.CombineMols(self.rd_mol, molecule)
+        self.rd_mol = reassign_atom_idx(self.rd_mol)
+        AllChem.Compute2DCoords(self.rd_mol)
+
+        self.conformers = []
+        self._calculator = None
+
+        self.results = {}
+        self._mol_hash = None
 
     def _remove_atom_mapping(self) -> None:
         """ Remove atom mapping from RDKit mol object """
@@ -255,10 +287,7 @@ class BaseMolecule:
                     merged_conformer = Chem.CombineMols(merged_conformer, frag_conf)
 
             merged_conformer = reassign_atom_idx(merged_conformer)
-            merged_conformer = Conformer(
-                molblock=Chem.MolToMolBlock(merged_conformer),
-                label=self.label + f"_c{conf_num}",
-            )
+            merged_conformer = Conformer(molblock=Chem.MolToMolBlock(merged_conformer))
 
             if refine_calculator is not None:
                 merged_conformer.calculator = refine_calculator
@@ -277,14 +306,45 @@ class BaseMolecule:
 
         for conf_num, frag_confs_set in enumerate(itertools.product(*fragment_confs)):
             self.conformers.append(merge_fragments(frag_confs_set, conf_num))
+        
+    def prune_conformers(self, energy_cutoff: float = 0.0, sort: bool = True):
+        """
+        Remove conformers with energies that are above the `energy_cutoff` (kcal/mol)
+        meassuret from the above the most stable conformer.
+
+        If sort = True the most stable conformer is put at idx 0. 
+        """
+        energy_most_stable_conf = 9999.9
+        for conf in self.conformers:
+            if len(conf.results) != 1:
+                if conf.results['energy'] < energy_most_stable_conf:
+                    energy_most_stable_conf = conf.results['energy']
+        
+        # No conformer converged - just save one.
+        if energy_most_stable_conf == 9999.9: # No conformer converged just save one
+            if len(self.conformers) != 0:
+                self.conformers = [self.conformers[0]]
+        else: # Save conformers if below cutoff
+            energy_most_stable_conf *= 627.503 # convert to kcal/mol
+            conf_cutoff = energy_most_stable_conf + energy_cutoff
+            pruned_conformers = []
+            for conf in self.conformers:
+                if conf.results['converged']:
+                    tmp_energy_kcal = conf.results['energy'] * 627.503
+                    if tmp_energy_kcal <= conf_cutoff:
+                        pruned_conformers.append((tmp_energy_kcal, conf))
+            
+            if sort: # sort confs w.r.t. the conformer energy.
+                sorted(pruned_conformers, key=lambda x: x[0])
+            self.conformers = [conf[1] for conf in pruned_conformers]
 
 
 class Molecule(BaseMolecule):
     """ """
 
-    def __init__(self, molblock: str = None, label: str = None) -> None:
+    def __init__(self, molblock: str = None) -> None:
         """ """
-        super().__init__(molblock=molblock, label=label)
+        super().__init__(molblock=molblock)
 
         # Is the graph mapped?
         if self.has_atom_mapping():
@@ -295,7 +355,7 @@ class Molecule(BaseMolecule):
         self._remove_atom_mapping()
         self._remove_pseudo_chirality()
 
-    def get_mapped_molecule(self, label: str = None):
+    def get_mapped_molecule(self):
         """
         Assign atom mapping as atom idx + 1 and assign random pseudochirality
         returns a MappedMolecule.
@@ -310,17 +370,14 @@ class Molecule(BaseMolecule):
         tmp_rdmol = next(EnumerateStereoisomers(tmp_rdmol, options=opts))
         tmp_rdmol = Chem.MolFromMolBlock(Chem.MolToMolBlock(tmp_rdmol), sanitize=False)
 
-        if label is None:
-            label = self.label + "_mapped"
-
-        return MappedMolecule(molblock=Chem.MolToMolBlock(tmp_rdmol), label=label)
+        return MappedMolecule(molblock=Chem.MolToMolBlock(tmp_rdmol))
 
 
 class MappedMolecule(BaseMolecule):
     """ """
 
-    def __init__(self, molblock=None, label=None):
-        super().__init__(molblock=molblock, label=label)
+    def __init__(self, molblock=None):
+        super().__init__(molblock=molblock)
 
         # Is the graph mapped?
         if self.has_atom_mapping():
@@ -328,7 +385,7 @@ class MappedMolecule(BaseMolecule):
         else:
             raise MoleculeException("Atoms in MolBlock are not mapped")
 
-    def get_unmapped_molecule(self, label: str = None) -> Molecule:
+    def get_unmapped_molecule(self) -> Molecule:
         """
         Remove atom mapping and reassign the sterochemistry.
         Return Unmapped Molecule
@@ -337,10 +394,7 @@ class MappedMolecule(BaseMolecule):
         tmp_mol._remove_atom_mapping()
         tmp_mol._remove_pseudo_chirality()
 
-        if label is None:
-            label = tmp_mol.label + "_unmapped"
-
-        return Molecule(molblock=Chem.MolToMolBlock(tmp_mol.rd_mol), label=label)
+        return Molecule(molblock=Chem.MolToMolBlock(tmp_mol.rd_mol))
 
 
 class Solvent:
@@ -353,7 +407,6 @@ class Solvent:
         self._smiles = smiles
         self._n_solvent_molecules = n_solvent
         self._nactive = active
-        self.label = "solvent"
 
 
 class Fragment(BaseMolecule):
@@ -386,8 +439,7 @@ class Fragment(BaseMolecule):
         # ##
         for conf_idx in range(frag_rdkit.GetNumConformers()):
             conf_molblock = Chem.MolToMolBlock(frag_rdkit, confId=conf_idx)
-            conf_name = f"{self.label}_c{conf_idx}"
-            conf = Conformer(molblock=conf_molblock, label=conf_name)
+            conf = Conformer(molblock=conf_molblock)
 
             # coords = np.zeros((frag_rdkit.GetNumAtoms(), 3))
             # obmol = pybel.readstring('mdl', conf.molblock)
@@ -439,9 +491,8 @@ class Fragment(BaseMolecule):
 class Conformer:
     """ """
 
-    def __init__(self, molblock=None, label=None):
+    def __init__(self, molblock=None):
         """ """
-        self.label = label
         self._molblock = molblock
         self.results = None
         self._calculator = None
@@ -453,8 +504,12 @@ class Conformer:
         return f"{self.__class__.__name__}(label={self.label})"
 
     @property
-    def molblock(self):
+    def molblock(self) -> str:
         return self._molblock
+
+    @property
+    def label(self) -> str:
+        return self.__class__.__name__ + str(hash(self._molblock))
 
     @property
     def coordinates(self):
@@ -592,7 +647,6 @@ class Reaction:
         product: MappedMolecule,
         charge: int = 0,
         spin: int = 1,
-        label: str = "reaction",
     ):
 
         if not isinstance(reactant, MappedMolecule) and isinstance(
@@ -605,7 +659,6 @@ class Reaction:
         self.charge = charge
         self.spin = spin
 
-        self.reaction_label = label
         self._path_search_calculator = None
 
         self._ts_path_energies = []
@@ -629,6 +682,10 @@ class Reaction:
             m.update(Chem.MolToSmiles(self.product.rd_mol).encode("utf-8"))
             self._reaction_hash = int(str(int(m.hexdigest(), 16))[:32])
         return self._reaction_hash
+    
+    @property
+    def reaction_label(self) -> str:
+        return self.__class__.__name__ + "_" + str(self.__hash__())
 
     @property
     def path_search_calculator(self):

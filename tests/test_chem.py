@@ -56,7 +56,7 @@ class TestBaseMolecule(unittest.TestCase):
 
     def test_embed_molecule(self):
         calc = xTBCalculator()
-        basemolecule = BaseMolecule(molblock=self.molblock_mapped, label="test_mol")
+        basemolecule = BaseMolecule(molblock=self.molblock_mapped)
         basemolecule.embed_molecule(confs_pr_frag=2, refine_calculator=calc)
         self.assertEqual(len(basemolecule.conformers), 4)
 
@@ -88,7 +88,7 @@ class TestFragment(unittest.TestCase):
 
     def test_embed_fragment(self):
         # Check that the mapping is ok.
-        frag = Fragment(molblock=self.unmapped_molblock, label="test")
+        frag = Fragment(molblock=self.unmapped_molblock)
         frag.make_fragment_conformers(nconfs=2)
 
         self.assertEqual(len(frag.conformers),  2)
@@ -104,7 +104,7 @@ class TestConformer(unittest.TestCase):
         pass
 
     def test_init_connectivity(self):
-        test_conf = Conformer(molblock=self.molblock, label="test_mol")
+        test_conf = Conformer(molblock=self.molblock)
 
         true_init_conectivity = np.array([[0, 1, 1], [1, 0, 0], [1, 0, 0]])
         self.assertTrue(
@@ -112,11 +112,11 @@ class TestConformer(unittest.TestCase):
         )
 
     def test_atom_symbols(self):
-        test_conf = Conformer(molblock=self.molblock, label="test_mol")
+        test_conf = Conformer(molblock=self.molblock)
         self.assertEqual(test_conf.atom_symbols, ["O", "H", "H"])
 
     def test_update_molblock(self):
-        test_conf = Conformer(molblock=self.molblock, label="test_mol")
+        test_conf = Conformer(molblock=self.molblock)
         init_coords = np.array(
             [
                 [-0.6348, 1.1971, 0.0010],
@@ -138,7 +138,7 @@ class TestConformer(unittest.TestCase):
         self.assertTrue(np.array_equal(test_conf.coordinates, changed_coords))
 
     def test_connectivity_check(self):
-        test_conf = Conformer(molblock=self.molblock, label="test_mol")
+        test_conf = Conformer(molblock=self.molblock)
 
         # Test that the input coords are the same:
         self.assertTrue(test_conf._check_connectivity(test_conf.coordinates))
@@ -154,7 +154,7 @@ class TestConformer(unittest.TestCase):
         self.assertFalse(test_conf._check_connectivity(change_b12_length))
 
     def test_run_calculation_sp(self):
-        test_conf = Conformer(molblock=self.molblock, label="test_mol")
+        test_conf = Conformer(molblock=self.molblock)
         xtb_calc = xTBCalculator(
             xtb_kwds="--sp", properties=["energy"], location="/tmp"
         )
@@ -164,7 +164,7 @@ class TestConformer(unittest.TestCase):
         self.assertAlmostEqual(test_conf.results['energy'], -5.046521661199)
 
     def test_run_calculation_opt(self):
-        test_conf = Conformer(molblock=self.molblock, label="test_mol")
+        test_conf = Conformer(molblock=self.molblock)
         xtb_calc = xTBCalculator(
             xtb_kwds="--opt loose", properties=["energy", "structure"], location="/tmp"
         )
@@ -188,10 +188,10 @@ class TestConformer(unittest.TestCase):
 #             [atom.SetAtomMapNum(atom.GetIdx() + 1) for atom in tmp_mol.GetAtoms()]
 #             self.prod_molblock = Chem.MolToMolBlock(tmp_mol)
 
-#         self.product = MappedMolecule(self.prod_molblock, label="product")
-#         self.reactant = MappedMolecule(self.reac_molblock, label="reactant")
+#         self.product = MappedMolecule(self.prod_molblock)
+#         self.reactant = MappedMolecule(self.reac_molblock)
 
-#         self.reaction = Reaction(self.reactant, self.product, charge=0, spin=1, label='test_reaction')
+#         self.reaction = Reaction(self.reactant, self.product, charge=0, spin=1)
 
 #         self.xtb_external_script = "/home/koerstz/github/elementary_step_om/scripts/gaussian_xtb_external.py"
 
@@ -224,50 +224,50 @@ class TestConformer(unittest.TestCase):
 #             [ 2.38323 , -1.322021,  0.165086],
 #             [ 0.436804, -0.970058,  0.808817]])
     
-    # def test_ts_search(self):
-    #     """ """
-    #     ts_calculator = GaussianCalculator(
-    #         kwds="opt=(ts,calcall,noeigentest)",
-    #         properties=['structure', 'energy', 'frequencies'],
-    #         external_script=self.xtb_external_script
-    #     )
-    #     results = self.reaction._run_ts_search(ts_calculator = ts_calculator)
+#     def test_ts_search(self):
+#         """ """
+#         ts_calculator = GaussianCalculator(
+#             kwds="opt=(ts,calcall,noeigentest)",
+#             properties=['structure', 'energy', 'frequencies'],
+#             external_script=self.xtb_external_script
+#         )
+#         results = self.reaction._run_ts_search(ts_calculator = ts_calculator)
 
-    #     self.assertAlmostEqual(results['energy'], -12.2793155)
+#         self.assertAlmostEqual(results['energy'], -12.2793155)
             
-    # def test_irc(self):
-    #     """ """
-    #     irc_calculator = GaussianCalculator(
-    #         kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5)",
-    #         properties=['irc_structure', 'energy'],
-    #         external_script=self.xtb_external_script
-    #     )
+#     # def test_irc(self):
+#     #     """ """
+#     #     irc_calculator = GaussianCalculator(
+#     #         kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5)",
+#     #         properties=['irc_structure', 'energy'],
+#     #         external_script=self.xtb_external_script
+#     #     )
 
-    #     results = self.reaction._run_irc(irc_calculator=irc_calculator)
+#     #     results = self.reaction._run_irc(irc_calculator=irc_calculator)
 
-    #     self.assertAlmostEqual(results['forward']['energy'], -12.3820476)
-    #     self.assertAlmostEqual(results['reverse']['energy'], -12.3900272)
+#     #     self.assertAlmostEqual(results['forward']['energy'], -12.3820476)
+#     #     self.assertAlmostEqual(results['reverse']['energy'], -12.3900272)
 
-    # def test_irc_check(self):
-    #     """ """
-    #     ts_calculator = GaussianCalculator(
-    #         kwds="opt=(ts,calcall,noeigentest)",
-    #         properties=['structure', 'energy', 'frequencies'],
-    #         external_script=self.xtb_external_script
-    #     )
+#     # def test_irc_check(self):
+#     #     """ """
+#     #     ts_calculator = GaussianCalculator(
+#     #         kwds="opt=(ts,calcall,noeigentest)",
+#     #         properties=['structure', 'energy', 'frequencies'],
+#     #         external_script=self.xtb_external_script
+#     #     )
 
-    #     irc_calculator = GaussianCalculator(
-    #         kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5)",
-    #         properties=['irc_structure', 'energy'],
-    #         external_script=self.xtb_external_script
-    #     )
+#     #     irc_calculator = GaussianCalculator(
+#     #         kwds="irc=(calcfc, recalc=10, maxpoints=50, stepsize=5)",
+#     #         properties=['irc_structure', 'energy'],
+#     #         external_script=self.xtb_external_script
+#     #     )
 
-    #     refine_calculator = xTBCalculator()       
+#     #     refine_calculator = xTBCalculator()       
 
-    #     self.reaction._ts_guess_coordinates = self.ts_guess_coords
-    #     self.reaction.irc_check_ts(ts_calculator, irc_calculator, refine_calculator)
+#     #     self.reaction._ts_guess_coordinates = self.ts_guess_coords
+#     #     self.reaction.irc_check_ts(ts_calculator, irc_calculator, refine_calculator)
         
-    #     print(self.reaction.__dict__)
+#     #     print(self.reaction.__dict__)
 
 
 if __name__ == "__main__":
