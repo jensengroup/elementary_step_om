@@ -96,7 +96,6 @@ def reassign_atom_idx(mol):
     rdmolops.AssignStereochemistry(mol, force=True)
     return mol
 
-
 def get_most_rigid_resonance(mol):
     """ Return the most rigid resonance structure """
     all_resonance_structures = [
@@ -120,10 +119,13 @@ def get_most_rigid_resonance(mol):
 
 class CreateValidIs:
 
-    def __init__(self, mapped_molecule, max_num_bonds: int = 2, cd: int = 4) -> None:
+    def __init__(
+        self, mapped_molecule, max_num_bonds: int = 2, cd: int = 4, inactive_atoms = []
+    ) -> None:
 
         self._max_bonds = max_num_bonds
         self._cd = cd
+        self._inactive_atoms = inactive_atoms
 
         self._mapped_molecule = mapped_molecule
         self._ac_matrix = self._mapped_molecule.ac_matrix
@@ -137,10 +139,18 @@ class CreateValidIs:
         """ """
         # Create one-bond conversion matrices
         num_atoms = len(self._mapped_molecule.atom_symbols)
-
+        
+        # inital inactive atoms is atom map numbers.
+        # convert to 0 based idx.
+        inactive_atoms = [int(x) - 1 for x in self._inactive_atoms]
+        
         make1, break1 = [], []
         for i in range(num_atoms):
             for j in range(num_atoms):
+                # Check if i or j is an inactive atoms don't add the conversion matrix.
+                if (i in inactive_atoms) or (j in inactive_atoms):
+                    continue
+
                 conversion_matrix = np.zeros(self._ac_matrix.shape, np.int8)
                 if j > i:
                     if self._ac_matrix [i, j] == 0:
@@ -184,10 +194,13 @@ class CreateValidIs:
    
 class TakeElementaryStep:
 
-    def __init__(self, mapped_molecule, max_num_bonds: int = 2, cd: int = 4) -> None:
+    def __init__(
+        self, mapped_molecule, max_num_bonds: int = 2, cd: int = 4, inactive_atoms = []
+    ) -> None:
         
         self._max_bonds = max_num_bonds
         self._cd = cd
+        self._inactive_atoms = inactive_atoms
 
         self._mapped_molecule = mapped_molecule
         self._atom_number = [atom.GetAtomicNum() for atom in self._mapped_molecule.rd_mol.GetAtoms()]
@@ -274,7 +287,10 @@ class TakeElementaryStep:
     def get_products(self, nprocs=1):
 
         valid_Is = CreateValidIs(
-            self._mapped_molecule, max_num_bonds=self._max_bonds, cd=self._cd
+            self._mapped_molecule,
+            max_num_bonds=self._max_bonds,
+            cd=self._cd,
+            inactive_atoms = self._inactive_atoms
         )
 
         with Pool(processes=nprocs) as pool:

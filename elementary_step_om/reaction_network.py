@@ -133,6 +133,7 @@ class ReactionNetwork:
         filename: str,
         max_bonds: int = 2,
         max_cd: int = 4,
+        inactive_atoms = [],
         energy_filter = None,
         ts_check_filter = None
     ):
@@ -150,6 +151,7 @@ class ReactionNetwork:
                 mapped_molecule=node_data["mapped_reactant"],
                 max_num_bonds=max_bonds,
                 cd=max_cd,
+                inactive_atoms = inactive_atoms
             )
             nodes_to_step.append(take_step)
             self._network.nodes[node_name]['is_run'] = None
